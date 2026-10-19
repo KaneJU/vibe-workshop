@@ -16,7 +16,8 @@
     "start": "node server.mjs",
     "test": "node tests/smoke.mjs",
     "test:mobile": "node tests/mobile.mjs",
-    "test:control": "node tests/control.mjs"
+    "test:control": "node tests/control.mjs",
+    "test:world": "node tests/world.mjs"
   },
   "dependencies": {
     "three": "^0.186.1"

@@ -28,7 +28,9 @@ if (isMainThread) {
       if (report.size) {
         console.log(`  size (m): x=${report.size[0]} y=${report.size[1]} z=${report.size[2]}  minY=${report.min?.[1]}`);
       }
-      if (report.stats) {
+      if (report.kind && report.kind !== 'part') {
+        console.log(`  ${report.kind}: ${JSON.stringify(report.stats || {})}`);
+      } else if (report.stats) {
         const s = report.stats;
         console.log(`  meshes=${s.meshes} triangles=${s.triangles} lights=${s.lights} animated=${s.updaters} spawns=${s.spawns}`);
       }
@@ -79,6 +81,13 @@ async function runChecks(dir) {
     return done();
   }
 
+  const hasPart = existsSync(path.join(dir, 'part.js'));
+  const hasWorld = existsSync(path.join(dir, 'world.js'));
+  if (hasPart && hasWorld) {
+    errors.push('part.js 和 world.js 只能寫其中一個（零件寫 part.js；環境、規則寫 world.js）');
+    return done();
+  }
+
   // ---- meta.json ----
   let meta = null;
   const metaFile = path.join(dir, 'meta.json');
@@ -105,8 +114,16 @@ async function runChecks(dir) {
       if (meta.wearSlot != null && !['right_hand', 'left_hand', 'head'].includes(meta.wearSlot)) {
         errors.push('meta.json 的 wearSlot 只能是 right_hand / left_hand / head');
       }
+      const type = meta.type == null ? (hasWorld ? null : 'part') : meta.type;
+      if (hasWorld && !['environment', 'rule'].includes(type)) {
+        errors.push('寫了 world.js，meta.json 的 type 要是 "environment" 或 "rule"');
+      }
+      if (!hasWorld && type !== 'part') errors.push('寫了 part.js，meta.json 的 type 要是 "part"（或不寫）');
+      meta.type = type;
       meta.name = name;
       report.meta = {
+        type,
+        replaces: hasWorld && meta.replaces ? String(meta.replaces) : null,
         name,
         description: String(meta.description || '').trim(),
         placement: meta.placement,
@@ -118,10 +135,13 @@ async function runChecks(dir) {
     }
   }
 
+  if (hasWorld) return checkWorld(dir, context, meta, errors, warnings, report, done);
+  report.kind = 'part';
+
   // ---- part.js 靜態檢查 ----
   const partFile = path.join(dir, 'part.js');
   if (!existsSync(partFile)) {
-    errors.push('找不到 part.js');
+    errors.push('找不到 part.js（環境、規則請寫 world.js）');
     return done();
   }
   const src = readFileSync(partFile, 'utf8');
@@ -291,5 +311,198 @@ async function runChecks(dir) {
       warnings.push(`物件沒有置中（中心在 x=${r3(cx)}, z=${r3(cz)}）`);
     }
   }
+  return done();
+}
+
+// ---------------- 世界模組（環境／規則）驗收 ----------------
+// 用跟瀏覽器同一個宿主（public/worldhost.mjs），配一個假的世界：3 個物件（一個正在被開、一個浮在半空）、
+// 會記錄呼叫的環境介面、開車鉤子。裝上去 → 跑 3 秒 → 跑開車鉤子 1 秒 → 拔掉，看有沒有出錯、留垃圾、太耗效能。
+async function checkWorld(dir, context, meta, errors, warnings, report, done) {
+  const file = path.join(dir, 'world.js');
+  const src = readFileSync(file, 'utf8');
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/.*$/gm, '$1');
+  const banned = [
+    [/^\s*import[\s{*]/m, 'world.js 不可以 import（three.js 請用 world.THREE）'],
+    [/\bimport\s*\(/, '不可以動態 import()'],
+    [/\brequire\s*\(/, '不可以 require()'],
+    [/\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource/, '不可以連網路'],
+    [/\b(document|window|navigator|globalThis)\s*\./, '不可以使用 document / window / navigator / globalThis（如果只是變數名稱，請改名）'],
+    [/\beval\s*\(|new\s+Function\s*\(/, '不可以 eval / new Function'],
+    [/\b(localStorage|sessionStorage|indexedDB)\b/, '不可以存取瀏覽器儲存空間'],
+    [/\b(setTimeout|setInterval|requestAnimationFrame)\s*\(/, '不可以用計時器，請寫在 update(dt, t)'],
+    [/\bMath\.random\s*\(/, '不要用 Math.random()，請用 world.random()'],
+    [/\b(TextureLoader|GLTFLoader|FileLoader|ImageLoader|CanvasTexture|FontLoader)\b/, '不可以載入外部檔案或用 canvas 貼圖'],
+  ];
+  for (const [re, msg] of banned) if (re.test(code)) errors.push(msg);
+  if (!/export\s+default\b/.test(code)) errors.push('world.js 需要 export default function install(world) { ... }');
+  if (meta?.replaces) {
+    const activeIds = [context.world?.environment?.id, ...(context.world?.rules || []).map((r) => r.id)].filter(Boolean);
+    if (!activeIds.includes(meta.replaces)) {
+      errors.push(`replaces 必須是目前啟用中的模組 id（現在啟用中：${activeIds.join('、') || '沒有'}）`);
+    }
+  }
+  if (errors.length) return done();
+
+  const THREE = await import('three');
+  const { createWorldHost, ENV_METHODS } = await import(pathToFileURL(context.paths.worldhost).href);
+  const root = new THREE.Group();
+  const envCalls = [];
+  const isColor = (c) => c === null || typeof c === 'number' || (typeof c === 'string' && c.length < 40);
+  const env = {};
+  for (const m of ENV_METHODS) {
+    env[m] = (...args) => {
+      envCalls.push(m);
+      const [a, b, c] = args;
+      if ((m === 'background' || m === 'fog') && !isColor(a)) warnings.push(`world.env.${m}() 的顏色格式怪怪的`);
+      if (m === 'fog' && a != null && !(Number.isFinite(b ?? 20) && Number.isFinite(c ?? 48) && (b ?? 20) < (c ?? 48))) {
+        warnings.push('world.env.fog(color, near, far) 的 near 要小於 far');
+      }
+      if (m === 'sun' && a?.position && !(Array.isArray(a.position) && a.position.length === 3)) warnings.push('world.env.sun({ position }) 要是 [x, y, z]');
+    };
+  }
+  env.reset = () => envCalls.push('reset');
+  const box3 = (o) => new THREE.Box3().setFromObject(o);
+  const mk = (id, name, x, y = 0) => {
+    const o = new THREE.Group();
+    const m = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial());
+    m.position.y = 0.5;
+    o.add(m);
+    o.position.set(x, y, 0);
+    return { id, name, object: o, box: () => box3(o), controlled: false, dragging: false };
+  };
+  const handles = [mk('o1', '測試方塊', 0), mk('o2', '測試卡丁車', 3), mk('o3', '浮在半空的機器人', -3, 2)];
+  handles[1].controlled = true;
+  const player = { position: new THREE.Vector3(0, 1.6, 4), forward: () => new THREE.Vector3(0, 0, -1) };
+  const hooks = [];
+  const tunes = {};
+  const vehicle = {
+    tune: (_id, partial) => Object.assign(tunes, partial),
+    onUpdate: (_id, fn) => hooks.push(fn),
+    clear: () => {},
+  };
+  const huds = [];
+  const runtimeErrors = [];
+  const host = createWorldHost({
+    THREE,
+    root,
+    env,
+    objects: () => handles,
+    supportBelow: () => 0,
+    player,
+    vehicle,
+    hud: (_id, text) => text && huds.push(text),
+    toast: () => {},
+    onError: (_rec, e, why) => runtimeErrors.push(`${why === 'slow' ? '太耗效能' : '執行時出錯'}：${e?.message || e}`),
+    now: () => performance.now(),
+  });
+  const rec = { id: '__candidate__', type: meta?.type, name: meta?.name || '新模組' };
+  let mod;
+  try {
+    mod = await import(`${pathToFileURL(file).href}?v=${Date.now()}`);
+  } catch (e) {
+    errors.push(`world.js 無法載入（語法錯誤？）：${e.message}`);
+    return done();
+  }
+  const res = host.install(rec, mod);
+  if (!res.ok) {
+    errors.push(`install(world) 執行錯誤：${res.error}`);
+    return done();
+  }
+  const entry = host.entry(rec.id);
+  let t = 0;
+  for (let f = 0; f < 180 && host.isActive(rec.id); f += 1) {
+    t += 1 / 60;
+    player.position.x = Math.sin(t) * 2;
+    host.update(1 / 60, t);
+  }
+  if (host.isActive(rec.id) && hooks.length) {
+    for (let f = 0; f < 60 && host.isActive(rec.id); f += 1) {
+      const st = {
+        mode: 'drive',
+        object: handles[1].object,
+        speed: 6 + Math.sin(f / 9) * 3,
+        yaw: f * 0.01,
+        moveYaw: f * 0.01,
+        alt: 0,
+        input: { x: Math.sin(f / 7), y: 1, lift: 0, action: f === 10 },
+        t: f / 60,
+      };
+      for (const h of [...hooks]) h(st, 1 / 60);
+      const bad = ['speed', 'yaw', 'moveYaw', 'alt'].find((k) => !Number.isFinite(st[k]));
+      if (bad) {
+        errors.push(`vehicle.onUpdate 把 ${bad} 改成了不是數字`);
+        break;
+      }
+    }
+  }
+  errors.push(...runtimeErrors);
+
+  let meshes = 0;
+  let triangles = 0;
+  let points = 0;
+  let lights = 0;
+  root.traverse((o) => {
+    if (o.isLight) lights += 1;
+    if (o.isPoints) points += o.geometry?.attributes?.position?.count || 0;
+    if (o.isMesh) {
+      meshes += 1;
+      const g = o.geometry;
+      const pos = g?.attributes?.position;
+      if (pos) triangles += ((g.index ? g.index.count : pos.count) / 3) * (o.isInstancedMesh ? o.count : 1);
+    }
+  });
+  // 環境：中間 28 公尺內地面要平（物件和車子都走在 y = 0，隆起的地形會讓車子陷進去）
+  let bump = 0;
+  if (meta?.type === 'environment') {
+    root.updateMatrixWorld(true);
+    const meshesOnly = [];
+    root.traverse((o) => {
+      if (o.isMesh) meshesOnly.push(o);
+    });
+    const ray = new THREE.Raycaster();
+    const DOWN = new THREE.Vector3(0, -1, 0);
+    const probe = new THREE.Vector3();
+    for (const r of [0, 2, 5, 8, 12, 16, 20, 24, 27]) {
+      const n = r === 0 ? 1 : Math.max(8, Math.round(r * 1.5));
+      for (let k = 0; k < n; k += 1) {
+        const a = (k / n) * Math.PI * 2;
+        ray.set(probe.set(Math.cos(a) * r, 3, Math.sin(a) * r), DOWN); // 從 3 公尺高往下看（雲、天空不算）
+        ray.far = 3.5;
+        const hit = ray.intersectObjects(meshesOnly, false)[0];
+        if (hit && hit.point.y > bump) bump = hit.point.y;
+      }
+    }
+    if (bump > 0.1) errors.push(`中間 28 公尺內的地面隆起到 ${bump.toFixed(2)} m；物件和車子走在 y = 0，這範圍要平（坑可以往下凹，山和石頭放遠一點）`);
+  }
+
+  const added = entry ? entry.added.size : 0;
+  const hookCount = hooks.length;
+  const envRefused = entry ? entry.envRefused : 0;
+  const hasUpdate = typeof entry?.ret?.update === 'function';
+  host.uninstall(rec.id);
+  if (root.children.length) warnings.push('拔掉之後場景裡還留著東西（請一律用 world.add 放東西）');
+
+  const envUsed = envCalls.filter((c) => c !== 'reset').length;
+  if (lights > 4) errors.push(`燈光太多（${lights} 個，上限 4）`);
+  if (triangles > 150_000) errors.push(`三角形太多（${Math.round(triangles)}，上限 150,000）`);
+  if (points > 30_000) errors.push(`粒子太多（${points}，上限 30,000）`);
+  if (meta?.type === 'environment' && envUsed === 0 && added === 0) errors.push('環境模組沒有改任何環境設定，也沒有放任何東西');
+  if (meta?.type === 'rule' && envRefused) warnings.push('規則模組呼叫了 world.env，會被忽略；要改天空、地面請做成環境模組');
+  if (meta?.type === 'rule' && !hasUpdate && hookCount === 0 && Object.keys(tunes).length === 0 && added === 0) {
+    warnings.push('這個規則好像什麼都沒做');
+  }
+  report.kind = meta?.type;
+  report.stats = {
+    added,
+    meshes,
+    triangles: Math.round(triangles),
+    points,
+    lights,
+    envCalls: envUsed,
+    vehicleHooks: hookCount,
+    tuning: Object.keys(tunes),
+    hud: huds.length > 0,
+    centerBump: Math.round(bump * 100) / 100,
+  };
   return done();
 }

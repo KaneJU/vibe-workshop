@@ -27,10 +27,14 @@ const PARTS_DIR = path.join(DATA_DIR, 'parts');
 const JOBS_DIR = path.join(ROOT, 'jobs');
 const LIB_FILE = path.join(DATA_DIR, 'library.json');
 const SCENE_FILE = path.join(DATA_DIR, 'scene.json');
+const WORLD_DIR = path.join(DATA_DIR, 'world'); // 世界模組程式（環境、規則）
+const WORLDS_FILE = path.join(DATA_DIR, 'worlds.json');
+const WORLD_STATE_FILE = path.join(DATA_DIR, 'world-state.json');
 const MAX_CONCURRENT = 2;
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 
 await fs.mkdir(PARTS_DIR, { recursive: true });
+await fs.mkdir(WORLD_DIR, { recursive: true });
 await fs.mkdir(JOBS_DIR, { recursive: true });
 
 async function readJson(file, fallback) {
@@ -55,6 +59,12 @@ const STARTER_DIR = path.join(ROOT, 'examples', 'starter');
 if (!existsSync(LIB_FILE) && existsSync(path.join(STARTER_DIR, 'library.json'))) {
   await fs.cp(STARTER_DIR, DATA_DIR, { recursive: true });
   log('首次啟動：已載入範例工坊（examples/starter）');
+}
+
+if (!existsSync(WORLDS_FILE) && existsSync(path.join(STARTER_DIR, 'worlds.json'))) {
+  await fs.copyFile(path.join(STARTER_DIR, 'worlds.json'), WORLDS_FILE);
+  if (existsSync(path.join(STARTER_DIR, 'world'))) await fs.cp(path.join(STARTER_DIR, 'world'), WORLD_DIR, { recursive: true });
+  log('已載入示範世界模組（examples/starter/worlds.json）');
 }
 
 const KEY_FILE = path.join(DATA_DIR, 'access-key');
@@ -115,6 +125,9 @@ const KEY_PAGE = `<!doctype html><meta charset="utf-8"><meta name="viewport" con
 const library = await readJson(LIB_FILE, { parts: [] });
 let scene = await readJson(SCENE_FILE, { instances: [] });
 const partById = (id) => library.parts.find((p) => p.id === id);
+const worlds = await readJson(WORLDS_FILE, { modules: [] });
+let worldState = await readJson(WORLD_STATE_FILE, { environment: null, rules: [], safeMode: false });
+const worldById = (id) => worlds.modules.find((m) => m.id === id);
 
 // ---------------- 打造工作（Codex） ----------------
 
@@ -138,6 +151,7 @@ function publicJob(job) {
     queuedMs: job.startedAt ? 0 : now - job.createdAt,
     log: job.log.slice(-12).map((l) => l.line),
     part: job.part,
+    module: job.module,
     placement: job.placement,
     error: job.error,
     warnings: job.warnings,
@@ -187,11 +201,25 @@ function buildContext(job) {
       size: p.size,
     })),
     base_part: job.mode === 'modify' ? 'base_part.js' : null,
+    world: worldSummary(),
     paths: {
       runtime: path.join(PUBLIC_DIR, 'runtime.mjs'),
+      worldhost: path.join(PUBLIC_DIR, 'worldhost.mjs'),
       partsDir: PARTS_DIR,
       libraryFile: LIB_FILE,
     },
+  };
+}
+
+function worldSummary() {
+  const brief = (m) => m && { id: m.id, type: m.type, name: m.name, description: m.description };
+  const env = worldState.safeMode ? null : worldById(worldState.environment);
+  const rules = worldState.safeMode ? [] : worldState.rules.map(worldById).filter(Boolean);
+  return {
+    environment: brief(env) || null,
+    rules: rules.map(brief),
+    library: worlds.modules.filter((m) => !m.hidden).map(brief),
+    activeSources: 'world_active/<id>.js',
   };
 }
 
@@ -204,7 +232,8 @@ function taskPrompt(job) {
     `You are the fabricator of the "Vibe 工坊" (Vibe Workshop). Follow AGENTS.md exactly.`,
     `The user, standing inside the workshop, said: 「${job.prompt}」`,
     modeLine,
-    `Read context.json, write part.js and meta.json in this directory, then run \`node validate.mjs\` and fix until it prints PASS.`,
+    `Read context.json. First decide whether this is a part, an environment or a rule (see AGENTS.md).`,
+    `Write part.js or world.js plus meta.json in this directory, then run \`node validate.mjs\` and fix until it prints PASS.`,
   ].join('\n');
 }
 
@@ -310,7 +339,15 @@ async function runJob(job) {
   if (job.mode === 'modify') {
     await fs.copyFile(path.join(PARTS_DIR, `${job.basePartId}.js`), path.join(dir, 'base_part.js'));
   }
-  await writeJson(path.join(dir, 'context.json'), buildContext(job));
+  const ctxData = buildContext(job);
+  const activeIds = [ctxData.world.environment?.id, ...ctxData.world.rules.map((r) => r.id)].filter(Boolean);
+  if (activeIds.length) {
+    await fs.mkdir(path.join(dir, 'world_active'), { recursive: true });
+    for (const id of activeIds) {
+      await fs.copyFile(path.join(WORLD_DIR, `${id}.js`), path.join(dir, 'world_active', `${id}.js`)).catch(() => {});
+    }
+  }
+  await writeJson(path.join(dir, 'context.json'), ctxData);
   addLog(job, '🧠 Codex 開始設計…');
   log('job start', job.id, job.mode, job.prompt);
 
@@ -322,6 +359,31 @@ async function runJob(job) {
   if (!report.ok) {
     const hint = result.code !== 0 ? `\nCodex 結束碼 ${result.code}：${result.stderrTail.slice(-400)}` : '';
     throw new Error(`零件沒有通過檢查：${(report.errors || []).join('；')}${hint}`);
+  }
+
+  if (report.kind === 'environment' || report.kind === 'rule') {
+    const worldId = newId('w');
+    await fs.copyFile(path.join(dir, 'world.js'), path.join(WORLD_DIR, `${worldId}.js`));
+    const mod = {
+      id: worldId,
+      type: report.kind,
+      name: report.meta.name,
+      description: report.meta.description,
+      prompt: job.prompt,
+      replaces: report.meta.replaces || null,
+      stats: report.stats,
+      jobId: job.id,
+      createdAt: new Date().toISOString(),
+    };
+    worlds.modules.push(mod);
+    await writeJson(WORLDS_FILE, worlds);
+    job.module = mod;
+    job.warnings = report.warnings || [];
+    job.status = 'done';
+    job.finishedAt = Date.now();
+    addLog(job, `✅ 完成：${mod.type === 'environment' ? '環境' : '規則'}「${mod.name}」`);
+    log('job done', job.id, mod.type, mod.name, `${Math.round((job.finishedAt - job.startedAt) / 1000)}s`);
+    return;
   }
 
   const partId = newId('p');
@@ -431,7 +493,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'GET' && p === '/api/state') {
-    return send(res, 200, { library, scene, limits: { maxConcurrent: MAX_CONCURRENT } });
+    return send(res, 200, { library, scene, worlds, worldState, limits: { maxConcurrent: MAX_CONCURRENT } });
   }
 
   if (req.method === 'PUT' && p === '/api/scene') {
@@ -539,6 +601,31 @@ async function handleApi(req, res, url) {
     return send(res, 200, { ok: true });
   }
 
+  if (req.method === 'PUT' && p === '/api/world-state') {
+    // 哪個環境、哪些規則啟用中（由瀏覽器決定，伺服器只記）
+    const body = await readBody(req);
+    const env = worldById(body.environment);
+    const rules = [...new Set(Array.isArray(body.rules) ? body.rules : [])]
+      .filter((id) => worldById(id)?.type === 'rule')
+      .slice(0, 30);
+    worldState = {
+      environment: env && env.type === 'environment' ? env.id : null,
+      rules,
+      safeMode: body.safeMode === true,
+      savedAt: new Date().toISOString(),
+    };
+    await writeJson(WORLD_STATE_FILE, worldState);
+    return send(res, 200, { ok: true });
+  }
+
+  if (req.method === 'POST' && (m = p.match(/^\/api\/world\/([\w-]+)\/hide$/))) {
+    const mod = worldById(m[1]);
+    if (!mod) return send(res, 404, { error: '找不到世界模組' });
+    mod.hidden = true;
+    await writeJson(WORLDS_FILE, worlds);
+    return send(res, 200, { ok: true });
+  }
+
   if (req.method === 'POST' && (m = p.match(/^\/api\/parts\/([\w-]+)\/hide$/))) {
     // 從工具箱移除＝隱藏：場景裡已放的、其他零件引用到的都照常能用
     const part = partById(m[1]);
@@ -578,6 +665,8 @@ const server = http.createServer(async (req, res) => {
     if (p.startsWith('/vendor/three/')) return serveFile(res, THREE_DIR, p.slice('/vendor/three/'.length), 'max-age=86400');
     const pm = p.match(/^\/parts\/([a-z]_[a-z0-9]+)\.js$/);
     if (pm) return serveFile(res, PARTS_DIR, `${pm[1]}.js`, 'max-age=31536000, immutable');
+    const wm = p.match(/^\/world\/(w_[a-z0-9]+)\.js$/);
+    if (wm) return serveFile(res, WORLD_DIR, `${wm[1]}.js`, 'max-age=31536000, immutable');
     return serveFile(res, PUBLIC_DIR, p === '/' ? 'index.html' : p.slice(1));
   } catch (err) {
     log('request error', req.method, req.url, err?.message);

@@ -15,6 +15,7 @@ No page reloads, no rebuilds — you never leave the world.
 - **Stack and compose** — drag objects onto each other, select several, and save them as a reusable part.
 - **Build from what you built** — a generated part can spawn other parts with `ctx.spawn(...)`, up to 8 levels deep.
 - **Modify in place** — select an AI-made object and say *"make it red"*; the new version replaces it where it stands.
+- **Change the world itself** — say *"turn this into the surface of the moon"* or *"add gravity"*: Codex writes an environment or a rule and swaps it into the running world. Even the driving engine can be retuned by a rule (*"make the car faster and let it drift"*).
 - **Drive, fly and wear what you build** — select an object and press ▶ 操作 [operate]: cars drive, flying cars fly, gloves go on your hand. Phones get a thumb joystick and an ⚡ action button; computers use WASD and Space.
 - **Everything persists** — the scene and the toolbox are saved automatically; close the tab and come back later.
 - **Desktop, phone and VR** — mouse and keyboard, a touch-friendly phone layout, and an experimental WebXR mode (grab and stack with controllers).
@@ -43,6 +44,8 @@ for (let i = 0; i < 8; i++) {
   cube.position.set(Math.sin(angle) * 2.2, 0, -Math.cos(angle) * 2.2);
 }
 ```
+
+Environments and rules are `world.js` modules: `install(world)` receives a controlled API (`world.add`, `world.env`, `world.objects()`, `world.vehicle.tune()`, `world.hud()` …), and everything a module adds is cleaned up when it is removed.
 
 Parts can also declare `controls` (`drive` / `fly` / `wear`) in `meta.json` and react to the joystick with `root.userData.onControl(s, dt)` — spinning wheels, brake lights, a clenching fist.
 
@@ -82,6 +85,25 @@ The in-app labels are in Traditional Chinese; the English meaning is in brackets
 Typed or spoken commands that run locally (no AI): *save as part called turret*, *undo*, *delete*, *ungroup*, *duplicate 3* — or the Chinese equivalents 「把這疊存成零件，叫砲台」「復原」「刪除」「拆開」「複製 3 個」.
 
 Prompts can be written in any language Codex understands; part names follow the language of your request.
+
+## Change the world: environments and rules
+
+Not just the objects — the world itself is made of modules you can swap while you stay inside. Only a small core (rendering, input, saving and the module loader) is fixed.
+
+| Type | What it changes | Try saying |
+|---|---|---|
+| 🌍 Environment (one at a time) | sky, ground, light, weather | "turn this into the surface of the moon", "a rainy night city" |
+| 📜 Rule (any number) | physics, game modes, scoring, vehicle handling | "add gravity", "a 3-lap race with a timer", "make the car faster and let it drift" |
+
+You don't pick the type — Codex decides from what you say. Ask to change an active module (*"make the sky a purple sunset"*) and Codex writes a new version that replaces it. Switch modules on and off, or remove them, in the 🌍 世界 [world] tab of the toolbox.
+
+Safety:
+
+- A module that throws, or needs more than about 8 ms per frame, is removed automatically while the rest of the world keeps running. If it replaced an older version, the old one comes back.
+- Before a new module is accepted, it runs on the computer against a fake world: 3 seconds of frames, the vehicle hooks, and a check that the middle 28 m of ground stays flat (objects and vehicles move on y = 0).
+- 🛡️ 安全模式 [safe mode] switches every module off; opening the page with `?safe=1` starts without any.
+
+<img src="docs/screenshot-moon.jpg" width="220" alt="Moon environment on a phone"> <img src="docs/screenshot-drift.jpg" width="220" alt="Drift rule while driving on the moon">
 
 ## Operate things: drive, fly, wear
 
@@ -149,6 +171,7 @@ DATA_DIR=/tmp/vw-test-data PORT=5311 HOST=0.0.0.0 npm start &
 npm test                 # desktop: stack, save as part, delete and undo, persistence
 npm run test:mobile      # iPhone emulation over the LAN: access key, drawers, touch drag, multi-select
 npm run test:control     # iPhone: drive, switch to fly, wear, chooser, snap; plus WASD on a desktop
+npm run test:world       # iPhone: moon, gravity, drift, error isolation, rollback, slow-module watchdog, safe mode
 WITH_CODEX=1 npm test    # also runs a real build and modification (uses Codex quota)
 ```
 
@@ -161,6 +184,8 @@ fabricator/validate.mjs the part validator (also run by Codex)
 public/runtime.mjs      part assembly shared by the browser and the validator (nesting and limits)
 public/app.js           the workshop: scene, selection, drag-to-stack, toolbox, voice, WebXR
 public/control.mjs      operation engine: drive, fly, wear (joystick, buttons, keyboard)
+public/worldhost.mjs    world-module host shared by the browser and the validator (isolation, cleanup, watchdog)
+public/worlds.mjs       the 🌍 world tab: enable / disable, rollback, safe mode
 public/index.html       page and help text
 examples/starter/       demo parts and scene loaded on first start
 launchd/                macOS background-service template and installer
@@ -175,6 +200,7 @@ tests/                  Playwright tests (desktop and phone)
 - The AI can't see what it built; it only gets the validator's numbers. The next idea is to render a screenshot and let it review its own work.
 - No physics yet: objects don't fall or topple, and vehicles drive straight through other objects.
 - Operate mode isn't available inside VR yet.
+- Environments must keep the middle 28 m flat; vehicles don't follow terrain yet.
 
 ## License
 

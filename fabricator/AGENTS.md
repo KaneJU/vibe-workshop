@@ -5,7 +5,20 @@ The user is standing inside the workshop talking to you — like Tony Stark talk
 Your part is hot-loaded into the running world (no reload, no restart), so it must be
 correct, fast, self-contained, and look good.
 
-## Files you must write (in this directory only)
+## First decide: part, environment or rule
+
+- **part** — a thing in the world: a car, a robot, a tree, a house, a glove. Write `part.js`. Most requests are parts.
+- **environment** — how the whole world looks: sky, ground, light, weather, time of day, setting
+  ("把這裡變成月球表面", "a rainy night city", "underwater"). Write `world.js` and set `"type": "environment"`.
+- **rule** — how the world behaves: physics, game modes, scoring, timers, triggers, global effects, how vehicles handle
+  ("加上重力", "a 3-lap race with a timer", "車子開快一點而且會甩尾"). Write `world.js` and set `"type": "rule"`.
+
+Write exactly ONE of `part.js` / `world.js`. If unsure, it is a part.
+To change an environment or rule that is already active ("雨下大一點", "even faster"), copy its code from
+`world_active/<id>.js` (listed under `world` in context.json), write the full new version as `world.js`
+and set `"replaces": "<id>"` in meta.json. The world modules section at the end describes world.js.
+
+## Files you must write for a part (in this directory only)
 
 1. `part.js` — an ES module with a synchronous default export:
 
@@ -29,6 +42,7 @@ correct, fast, self-contained, and look good.
      Users refer to parts by this name later.
    - `description`: one sentence, in the same language as the request.
    - `placement`: `"front"` | `"on_selection"` | `"around_player"` (see below).
+   - `type`: `"part"` (may be omitted for parts).
 
 Then run `node validate.mjs` and fix every `✗` line until it prints `PASS`.
 Warnings (`!`) are hints; fix them when easy. Do not create or modify any other file.
@@ -145,3 +159,52 @@ When the user refers to parts in the library (by name) or to the selection, buil
 those parts with `ctx.spawn(...)` — for example "用砲台在我周圍排一圈" → spawn the turret 8 times in a
 circle with placement `"around_player"`, each rotated to face outward or toward the center as asked.
 Spawned parts may themselves spawn other parts (nesting works up to 8 levels deep).
+
+## World modules (environment / rule): world.js
+
+```js
+export default function install(world) {
+  // set things up; everything you add with world.add() is removed automatically later
+  return {
+    update(dt, t) {}, // optional, called every frame (t = seconds since the module started)
+    dispose() {},     // optional extra cleanup
+  };
+}
+```
+
+`meta.json`: `{ "type": "environment" | "rule", "name": "…", "description": "…", "replaces": "<id>" (optional) }`
+
+The `world` API (the only way to touch the world):
+
+- `world.THREE` — three.js (r186). No `import`.
+- `world.add(obj)` / `world.remove(obj)` — put things in the scene (sky domes, rain, terrain, race gates, coins).
+  Never touch the scene any other way.
+- `world.env` — **environment modules only** (ignored for rules); restored automatically when the environment is removed:
+  `background(color)` · `fog(color, near, far)` / `fog(null)` · `ground({ color, roughness, metalness, visible })` ·
+  `grid(visible)` · `pad(visible)` · `hemi({ sky, ground, intensity })` · `sun({ color, intensity, position: [x, y, z] })` ·
+  `exposure(n)` · `reflections(n)`. Colors are numbers like `0x223344` or strings like `'#223344'`.
+  The default floor is a 30 m radius disk at y = 0. Objects and vehicles always move on y = 0, so **within 28 m of
+  the center the ground must stay flat: nothing you add may rise above y = 0.1 there** (craters and dips below 0 are
+  fine). Put hills, mountains, big rocks and buildings farther out (≥ 30 m). You may hide the default floor
+  (`ground({ visible: false })`) and add your own terrain, as long as the middle stays flat. The validator samples
+  the ground inside 28 m and fails the module if anything sticks up.
+- `world.objects()` — the workshop objects: `{ id, name, object, box(), controlled, dragging }`. `object` is the
+  THREE.Object3D (rules may move it); `box()` is its world bounding box. Never move objects that are `controlled`
+  (the user is driving or wearing them) or `dragging`.
+- `world.supportBelow(handle)` — y of the highest surface under that object (another object, or 0 for the floor).
+- `world.player.position` — live Vector3 of the user's head; `world.player.forward()` — flat unit Vector3.
+- `world.vehicle.tune({ … })` — change how driving / flying / walking feels. Defaults: `maxForward 10`, `maxReverse 4`,
+  `accel 7`, `brake 14`, `turnRate 1.8`, `drag 1.4`, `grip 1` (1 = no sliding; ~0.15 = drifting), `flyMaxForward 14`,
+  `liftSpeed 3.2`, `walkSpeed 2.4`. The defaults come back automatically when the rule is removed.
+- `world.vehicle.onUpdate((s, dt) => {})` — every frame while the user drives or flies:
+  `s = { mode, object, speed, yaw, moveYaw, alt, input: { x, y, lift, action }, t }`. You may change `s.speed`,
+  `s.yaw`, `s.moveYaw` (the direction it actually travels — differing from `yaw` is a drift) and `s.alt`.
+- `world.hud(text)` — one short status line at the top of the screen (lap time, score); `world.hud('')` clears it.
+- `world.toast(text)` — a short message (rate limited).
+- `world.random()` — deterministic random number in [0, 1).
+
+Rules for world modules: same forbidden list as parts (no `import`, `fetch`, DOM, timers, `Math.random`).
+Per-frame work must stay cheap (the host removes modules that take more than ~8 ms per frame).
+Budget: < 150k triangles, ≤ 4 lights, ≤ 30k particles. Gravity-like rules should integrate a velocity per object,
+land on `world.supportBelow(h)` and leave resting objects alone. Validate with `node validate.mjs` (it runs your
+module against a fake world with three objects — one being driven, one floating in the air).

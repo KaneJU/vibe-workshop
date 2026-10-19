@@ -4,6 +4,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { createRuntime } from './runtime.mjs';
 import { createControlEngine, guessMode, MODES } from './control.mjs';
+import { createWorldManager } from './worlds.mjs';
 
 const $ = (sel) => document.querySelector(sel);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -45,7 +46,8 @@ controls.minDistance = 0.5;
 controls.maxDistance = 30;
 controls.update();
 
-scene.add(new THREE.HemisphereLight(0xcfeaff, 0x0a1020, 0.8));
+const hemi = new THREE.HemisphereLight(0xcfeaff, 0x0a1020, 0.8);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffffff, 2.0);
 sun.position.set(5, 9, 6);
 sun.castShadow = true;
@@ -82,6 +84,76 @@ world.name = 'world';
 scene.add(world);
 const fx = new THREE.Group(); // 打造中的全息框
 scene.add(fx);
+const worldFx = new THREE.Group(); // 世界模組放進來的東西（天空、雨、賽道⋯）
+worldFx.name = 'world-modules';
+scene.add(worldFx);
+
+// 預設環境：環境模組被拔掉時照這份還原
+const envDefaults = {
+  background: scene.background.clone(),
+  fog: { color: scene.fog.color.clone(), near: scene.fog.near, far: scene.fog.far },
+  hemi: { sky: hemi.color.clone(), ground: hemi.groundColor.clone(), intensity: hemi.intensity },
+  sun: { color: sun.color.clone(), intensity: sun.intensity, position: sun.position.clone() },
+  floor: { color: floor.material.color.clone(), roughness: floor.material.roughness, metalness: floor.material.metalness },
+  exposure: renderer.toneMappingExposure,
+  reflections: scene.environmentIntensity,
+};
+// 環境模組只能透過這組函式改天空、地面、燈光（記得住原狀才還原得回去）
+const envAdapter = {
+  background(c) {
+    scene.background = c == null ? null : new THREE.Color(c);
+  },
+  fog(c, near = 20, far = 48) {
+    scene.fog = c == null ? null : new THREE.Fog(new THREE.Color(c), near, far);
+  },
+  ground({ color, roughness, metalness, visible } = {}) {
+    if (color != null) floor.material.color.set(color);
+    if (Number.isFinite(roughness)) floor.material.roughness = roughness;
+    if (Number.isFinite(metalness)) floor.material.metalness = metalness;
+    if (visible != null) floor.visible = !!visible;
+  },
+  grid(v) {
+    grid.visible = !!v;
+  },
+  pad(v) {
+    pad.visible = !!v;
+  },
+  hemi({ sky, ground, intensity } = {}) {
+    if (sky != null) hemi.color.set(sky);
+    if (ground != null) hemi.groundColor.set(ground);
+    if (Number.isFinite(intensity)) hemi.intensity = intensity;
+  },
+  sun({ color, intensity, position } = {}) {
+    if (color != null) sun.color.set(color);
+    if (Number.isFinite(intensity)) sun.intensity = intensity;
+    if (Array.isArray(position) && position.length === 3 && position.every(Number.isFinite)) sun.position.fromArray(position);
+  },
+  exposure(n) {
+    if (Number.isFinite(n)) renderer.toneMappingExposure = n;
+  },
+  reflections(n) {
+    if (Number.isFinite(n)) scene.environmentIntensity = n;
+  },
+  reset() {
+    const d = envDefaults;
+    scene.background = d.background.clone();
+    scene.fog = new THREE.Fog(d.fog.color.clone(), d.fog.near, d.fog.far);
+    hemi.color.copy(d.hemi.sky);
+    hemi.groundColor.copy(d.hemi.ground);
+    hemi.intensity = d.hemi.intensity;
+    sun.color.copy(d.sun.color);
+    sun.intensity = d.sun.intensity;
+    sun.position.copy(d.sun.position);
+    floor.material.color.copy(d.floor.color);
+    floor.material.roughness = d.floor.roughness;
+    floor.material.metalness = d.floor.metalness;
+    floor.visible = true;
+    grid.visible = true;
+    pad.visible = true;
+    renderer.toneMappingExposure = d.exposure;
+    scene.environmentIntensity = d.reflections;
+  },
+};
 
 // ---------------- 狀態 ----------------
 
@@ -106,6 +178,42 @@ const engine = createControlEngine({
   dropToSupport: (i) => dropToSupport(i),
   toast: (m) => toast(m),
   instancesList: () => [...instances.values()],
+});
+
+// 世界模組：環境（天空地面燈光天氣）與規則（重力、玩法、開車手感），由 Codex 寫、當場裝卸
+function objectHandles() {
+  const held = engine.session?.inst;
+  return [...instances.values()].map((i) => ({
+    id: i.id,
+    name: partName(i.partId),
+    object: i.object,
+    box: () => worldBox(i),
+    controlled: i === held,
+    dragging: !!drag && drag.moving.includes(i),
+  }));
+}
+function supportBelowHandle(h) {
+  const inst = instances.get(h?.id);
+  if (!inst) return 0;
+  const b = worldBox(inst);
+  const c = b.getCenter(new THREE.Vector3());
+  return supportHeight(c.x, c.z, b.getSize(new THREE.Vector3()).multiplyScalar(0.5), new Set([inst]));
+}
+const worlds = createWorldManager({
+  THREE,
+  root: worldFx,
+  env: envAdapter,
+  objects: () => objectHandles(),
+  supportBelow: (h) => supportBelowHandle(h),
+  player: { position: player.position, forward: () => forwardFlat() },
+  vehicle: engine.vehicle,
+  hudEl: $('#worldHud'),
+  listEl: $('#worldList'),
+  safeBtn: $('#safeBtn'),
+  resetBtn: $('#resetEnvBtn'),
+  toast: (m) => toast(m),
+  api: (...a) => api(...a),
+  forceSafe: new URLSearchParams(window.location.search).has('safe'),
 });
 
 async function api(method, url, body, opts = {}) {
@@ -826,7 +934,10 @@ function updateJobCard(card, job) {
   const line = card.querySelector('.jline');
   if (job.status === 'queued') line.textContent = '⏳ 排隊中（同時最多做 2 個）';
   else if (job.status === 'running') line.textContent = `🔧 ${secs}s · ${last}`;
-  else if (job.status === 'done') line.textContent = `✅ ${job.part?.name}（${secs} 秒）`;
+  else if (job.status === 'done') {
+    const kind = job.module ? (job.module.type === 'environment' ? '🌍 環境：' : '🌍 規則：') : '';
+    line.textContent = `✅ ${kind}${job.part?.name || job.module?.name}（${secs} 秒）`;
+  }
   else if (job.status === 'cancelled') line.textContent = '🛑 已取消';
   else if (job.status === 'error') line.textContent = `⚠️ 失敗（${secs} 秒）`;
   const err = card.querySelector('.jerr');
@@ -890,6 +1001,11 @@ function replaceInstancePart(inst, newPartId) {
 }
 
 async function finalizeJob(ctx, job) {
+  if (job.module) {
+    removeHologram(ctx.holo);
+    await worlds.add(job.module);
+    return;
+  }
   const part = job.part;
   if (!runtime.parts.has(part.id)) {
     library.push(part);
@@ -1342,6 +1458,13 @@ $('#selToggle').onclick = () => {
   leftPanel.classList.toggle('open');
   rightPanel.classList.remove('open');
 };
+document.querySelectorAll('.panel.right [data-tab]').forEach((b) =>
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.panel.right [data-tab]').forEach((x) => x.classList.toggle('on', x === b));
+    $('#tab-parts').hidden = b.dataset.tab !== 'parts';
+    $('#tab-world').hidden = b.dataset.tab !== 'world';
+  }),
+);
 $('#helpBtn').onclick = () => ($('#help').hidden = false);
 $('#helpClose').onclick = () => ($('#help').hidden = true);
 function fitCamera() {
@@ -1358,6 +1481,7 @@ window.addEventListener('resize', () => {
 // ---------------- 主迴圈 ----------------
 
 let lastT = now();
+let lastWorldSave = 0;
 renderer.setAnimationLoop(() => {
   const t = now();
   const dt = Math.min(t - lastT, 0.1);
@@ -1378,6 +1502,11 @@ renderer.setAnimationLoop(() => {
     }
   }
   engine.update(dt);
+  worlds.update(dt, t);
+  if (worlds.hasRules && t - lastWorldSave > 5) {
+    lastWorldSave = t;
+    scheduleSave();
+  }
   for (const h of selHelpers.values()) h.update();
   animateHolograms(t);
   pad.material.opacity = 0.4 + 0.15 * Math.sin(t * 1.5);
@@ -1396,6 +1525,7 @@ async function init() {
     await Promise.all(library.filter((p) => p.kind === 'generated').map((p) => loadModule(p.id)));
     for (const rec of state.scene.instances || []) if (runtime.parts.has(rec.partId)) addInstance(rec, { save: false });
     loaded = true;
+    await worlds.init(state.worlds?.modules || [], state.worldState || {});
     renderLibrary();
     updateSelectionUI();
     updateStatus();
@@ -1435,6 +1565,8 @@ window.__ws = {
   spawnFromLibrary,
   worldBox,
   engine,
+  worlds,
+  envAdapter,
   openControl,
   startControl,
   stopControl,

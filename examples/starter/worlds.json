@@ -1,0 +1,73 @@
+{
+  "modules": [
+    {
+      "id": "w_mvfdxa3i5d8015",
+      "type": "environment",
+      "name": "月球星空",
+      "description": "灰色月壤與遠方環形山延伸至地平線，繁星之間懸著蔚藍地球。",
+      "prompt": "把這裡變成月球表面，天上有星星和地球",
+      "replaces": null,
+      "stats": {
+        "added": 3,
+        "meshes": 4,
+        "triangles": 62160,
+        "points": 2200,
+        "lights": 0,
+        "envCalls": 9,
+        "vehicleHooks": 0,
+        "tuning": [],
+        "hud": false,
+        "centerBump": 0
+      },
+      "createdAt": "2026-10-19T15:04:02.910Z"
+    },
+    {
+      "id": "w_mvfdncjr7f0784",
+      "type": "rule",
+      "name": "重力微彈",
+      "description": "沒有支撐的物件會自然下落，碰到地板或其他物件時輕彈一下再停穩。",
+      "prompt": "加上重力，沒有東西撐著的物件會掉下來，落地會稍微彈一下",
+      "replaces": null,
+      "stats": {
+        "added": 0,
+        "meshes": 0,
+        "triangles": 0,
+        "points": 0,
+        "lights": 0,
+        "envCalls": 0,
+        "vehicleHooks": 0,
+        "tuning": [],
+        "hud": false
+      },
+      "createdAt": "2026-10-19T14:56:19.527Z"
+    },
+    {
+      "id": "w_mvfdpd9e1d9381",
+      "type": "rule",
+      "name": "極速甩尾",
+      "description": "提高車速與加速力，轉彎時滑移甩尾，並即時顯示時速與甩尾狀態。",
+      "prompt": "車子開快一點，而且轉彎的時候會甩尾，畫面上顯示時速",
+      "replaces": null,
+      "stats": {
+        "added": 0,
+        "meshes": 0,
+        "triangles": 0,
+        "points": 0,
+        "lights": 0,
+        "envCalls": 0,
+        "vehicleHooks": 1,
+        "tuning": [
+          "maxForward",
+          "maxReverse",
+          "accel",
+          "brake",
+          "turnRate",
+          "drag",
+          "grip"
+        ],
+        "hud": true
+      },
+      "createdAt": "2026-10-19T14:57:53.762Z"
+    }
+  ]
+}

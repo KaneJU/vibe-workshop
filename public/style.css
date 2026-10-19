@@ -168,3 +168,29 @@ body.controlling .hud, body.controlling .panel, body.controlling #mobileBar { di
 .ctl-hint.fade { opacity: 0; }
 .modal .choices { display: flex; gap: 10px; margin: 14px 0; }
 .modal .choices button { flex: 1; font-size: 18px; padding: 16px 6px; }
+
+/* 右側面板分頁＋世界模組 */
+.tabs { display: flex; gap: 6px; }
+.tabs button { flex: 1; font-size: 13px; padding: 6px 4px; }
+.tabs button.on { background: var(--cyan); color: #04121c; border-color: var(--cyan); font-weight: 600; }
+.wmod { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; background: rgba(56, 225, 255, 0.04); }
+.wmod.on { border-color: var(--ok); background: rgba(77, 255, 166, 0.08); }
+.wmod .name { font-weight: 600; display: flex; justify-content: space-between; gap: 6px; }
+.wmod .tags { display: flex; gap: 4px; align-items: center; }
+.wmod .badge { font-size: 11px; color: #04121c; border-radius: 6px; padding: 1px 6px; font-weight: 600; background: #c4b5fd; }
+.wmod .badge.environment { background: #7dd3fc; }
+.wmod .badge.rule { background: #fca5a5; }
+.wmod .desc { font-size: 12px; color: var(--muted); margin: 3px 0 6px; }
+.wmod .toggle { font-size: 12px; padding: 4px 10px; }
+.wmod .rm { font-size: 12px; line-height: 1; padding: 2px 6px; border-radius: 6px; opacity: 0; }
+.wmod:hover .rm { opacity: 1; }
+@media (hover: none) { .wmod .rm { opacity: 1; } }
+.world-actions { margin: 0 0 10px; }
+#safeBtn.on { background: #ffd166; color: #04121c; border-color: #ffd166; }
+#worldHud {
+  position: fixed; top: calc(54px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 8;
+  background: var(--glass); border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px;
+  font-weight: 600; font-variant-numeric: tabular-nums; pointer-events: none; white-space: nowrap;
+  max-width: 90vw; overflow: hidden; text-overflow: ellipsis; backdrop-filter: blur(10px);
+}
+body.controlling #worldHud { top: calc(70px + env(safe-area-inset-top)); }

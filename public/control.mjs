@@ -34,6 +34,64 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
   const spinQ = new THREE.Quaternion();
   let s = null; // 目前這一次操作
 
+  // 手感參數：預設值＋各規則模組的覆寫（模組拔掉時覆寫跟著消失，自動回到原本手感）
+  const DEFAULT_TUNING = {
+    maxForward: 10,
+    maxReverse: 4,
+    accel: 7,
+    brake: 14,
+    turnRate: 1.8,
+    drag: 1.4,
+    grip: 1,
+    flyMaxForward: 14,
+    flyMaxReverse: 6,
+    liftSpeed: 3.2,
+    walkSpeed: 2.4,
+  };
+  const TUNING_RANGE = {
+    maxForward: [1, 60],
+    maxReverse: [0.5, 20],
+    accel: [0.5, 60],
+    brake: [1, 80],
+    turnRate: [0.2, 6],
+    drag: [0, 10],
+    grip: [0.02, 1],
+    flyMaxForward: [1, 80],
+    flyMaxReverse: [0.5, 30],
+    liftSpeed: [0.2, 20],
+    walkSpeed: [0.3, 12],
+  };
+  const overrides = new Map(); // 模組 id -> 覆寫
+  const hooks = new Map(); // 模組 id -> [每格鉤子]
+  let tuning = { ...DEFAULT_TUNING };
+  function recomputeTuning() {
+    tuning = { ...DEFAULT_TUNING };
+    for (const o of overrides.values()) Object.assign(tuning, o);
+  }
+  const vehicleApi = {
+    tune(id, partial) {
+      const clean = {};
+      for (const [k, v] of Object.entries(partial || {})) {
+        if (TUNING_RANGE[k] && Number.isFinite(v)) clean[k] = clamp(v, ...TUNING_RANGE[k]);
+      }
+      overrides.set(id, { ...(overrides.get(id) || {}), ...clean });
+      recomputeTuning();
+    },
+    onUpdate(id, fn) {
+      if (!hooks.has(id)) hooks.set(id, []);
+      hooks.get(id).push(fn);
+    },
+    clear(id) {
+      overrides.delete(id);
+      hooks.delete(id);
+      recomputeTuning();
+    },
+    get tuning() {
+      return { ...tuning };
+    },
+  };
+  const angleDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
+
   function resetInput() {
     Object.assign(input, { x: 0, y: 0, lift: 0, actionHeld: false, actionPressed: false });
   }
@@ -118,6 +176,7 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
     } else {
       const e = new THREE.Euler().setFromQuaternion(obj.quaternion, 'YXZ');
       s.yaw = e.y;
+      s.moveYaw = e.y; // 車子實際往哪走；抓地力低時會跟車頭方向不同＝甩尾
       s.speed = 0;
       s.alt = mode === 'fly' ? Math.max(0, box.min.y) : 0;
       s.groundOffset = obj.position.y - box.min.y;
@@ -225,20 +284,44 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
   function updateVehicle(dt) {
     const { obj, mode } = s;
     const fly = mode === 'fly';
-    const maxF = fly ? 14 : 10;
-    const maxR = fly ? 6 : 4;
+    const T = tuning;
+    const maxF = fly ? T.flyMaxForward : T.maxForward;
+    const maxR = fly ? T.flyMaxReverse : T.maxReverse;
     if (Math.abs(input.y) > 0.05) {
       const braking = Math.abs(s.speed) > 0.2 && Math.sign(input.y) !== Math.sign(s.speed);
-      s.speed += input.y * (braking ? 14 : 7) * dt;
+      s.speed += input.y * (braking ? T.brake : T.accel) * dt;
     } else {
-      s.speed *= Math.max(0, 1 - 1.4 * dt);
+      s.speed *= Math.max(0, 1 - T.drag * dt);
     }
     s.speed = clamp(s.speed, -maxR, maxF);
     // 車子要有速度才轉得動；飛行器原地也能慢慢轉
-    const grip = fly ? Math.max(0.5, clamp(Math.abs(s.speed) / 4, 0, 1)) : clamp(Math.abs(s.speed) / 3, 0, 1);
-    s.yaw -= input.x * 1.8 * grip * (s.speed < -0.05 ? -1 : 1) * dt;
-    fwd.set(Math.sin(s.yaw), 0, Math.cos(s.yaw));
-    obj.position.addScaledVector(fwd, s.speed * dt);
+    const steerGrip = fly ? Math.max(0.5, clamp(Math.abs(s.speed) / 4, 0, 1)) : clamp(Math.abs(s.speed) / 3, 0, 1);
+    s.yaw -= input.x * T.turnRate * steerGrip * (s.speed < -0.05 ? -1 : 1) * dt;
+    if (fly) s.alt = clamp(s.alt + input.lift * T.liftSpeed * dt, 0, 25);
+    // 抓地力 1＝車子往車頭方向走；越低，行進方向越慢跟上車頭＝甩尾
+    s.moveYaw = T.grip >= 1 ? s.yaw : s.moveYaw + angleDiff(s.yaw, s.moveYaw) * Math.min(1, T.grip * 12 * dt);
+
+    // 規則模組的每格鉤子：可以改速度、車頭、行進方向、高度
+    if (hooks.size) {
+      const hs = {
+        mode,
+        object: obj,
+        speed: s.speed,
+        yaw: s.yaw,
+        moveYaw: s.moveYaw,
+        alt: s.alt,
+        input: { x: input.x, y: input.y, lift: input.lift, action: input.actionPressed },
+        t: s.t,
+      };
+      for (const list of hooks.values()) for (const fn of list) fn(hs, dt);
+      if (Number.isFinite(hs.speed)) s.speed = clamp(hs.speed, -80, 80);
+      if (Number.isFinite(hs.yaw)) s.yaw = hs.yaw;
+      if (Number.isFinite(hs.moveYaw)) s.moveYaw = hs.moveYaw;
+      if (Number.isFinite(hs.alt)) s.alt = clamp(hs.alt, 0, 60);
+    }
+
+    move.set(Math.sin(s.moveYaw), 0, Math.cos(s.moveYaw));
+    obj.position.addScaledVector(move, s.speed * dt);
     const r = Math.hypot(obj.position.x, obj.position.z);
     if (r > 28) {
       obj.position.x *= 28 / r;
@@ -249,13 +332,13 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
     let roll = 0;
     let bob = 0;
     if (fly) {
-      s.alt = clamp(s.alt + input.lift * 3.2 * dt, 0, 25);
       if (s.alt > 0.05) bob = Math.sin(s.t * 2.2) * 0.04;
       roll = input.x * 0.35 * clamp(Math.abs(s.speed) / maxF + 0.3, 0, 1); // 轉彎時往內側傾
       pitch = input.y * 0.08;
     }
     obj.position.y = s.alt + s.groundOffset + bob;
     obj.rotation.set(pitch, s.yaw, roll);
+    fwd.set(Math.sin(s.yaw), 0, Math.cos(s.yaw)); // 鏡頭跟著車頭方向
 
     const state = {
       mode,
@@ -302,7 +385,7 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
       if (fwd.lengthSq() < 1e-6) fwd.set(0, 0, -1);
       fwd.normalize();
       right.crossVectors(fwd, UP).normalize();
-      move.copy(fwd).multiplyScalar(input.y).addScaledVector(right, input.x).multiplyScalar(2.4 * dt);
+      move.copy(fwd).multiplyScalar(input.y).addScaledVector(right, input.x).multiplyScalar(tuning.walkSpeed * dt);
       camera.position.add(move);
       controls.target.add(move);
     }
@@ -345,6 +428,7 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
     start,
     stop,
     update,
+    vehicle: vehicleApi,
     pressAction(down) {
       if (down && !input.actionHeld) input.actionPressed = true;
       input.actionHeld = down;
