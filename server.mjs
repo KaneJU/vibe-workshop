@@ -334,6 +334,8 @@ async function runJob(job) {
     prompt: job.prompt,
     size: report.size,
     placement: report.meta.placement,
+    controls: report.meta.controls || null,
+    wearSlot: report.meta.wearSlot || null,
     stats: report.stats,
     basedOn: job.basePartId || null,
     jobId: job.id,
@@ -522,6 +524,19 @@ async function handleApi(req, res, url) {
       job.proc?.kill('SIGTERM');
     }
     return send(res, 200, publicJob(job));
+  }
+
+  if (req.method === 'POST' && (m = p.match(/^\/api\/parts\/([\w-]+)\/controls$/))) {
+    // 使用者在「要怎麼操作它？」選的模式，記在零件上
+    const part = partById(m[1]);
+    if (!part) return send(res, 404, { error: '找不到零件' });
+    const body = await readBody(req);
+    if (body.controls !== null && !['drive', 'fly', 'wear'].includes(body.controls)) {
+      return send(res, 400, { error: 'controls 只能是 drive / fly / wear / null' });
+    }
+    part.controls = body.controls;
+    await writeJson(LIB_FILE, library);
+    return send(res, 200, { ok: true });
   }
 
   if (req.method === 'POST' && (m = p.match(/^\/api\/parts\/([\w-]+)\/hide$/))) {

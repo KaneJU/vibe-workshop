@@ -15,7 +15,8 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node tests/smoke.mjs",
-    "test:mobile": "node tests/mobile.mjs"
+    "test:mobile": "node tests/mobile.mjs",
+    "test:control": "node tests/control.mjs"
   },
   "dependencies": {
     "three": "^0.186.1"

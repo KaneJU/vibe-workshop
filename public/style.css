@@ -20,6 +20,7 @@ button {
 }
 button:hover:not(:disabled) { background: rgba(56, 225, 255, 0.18); border-color: var(--cyan); }
 button:disabled { opacity: 0.35; cursor: default; }
+button { touch-action: manipulation; }
 button.primary { background: var(--cyan); color: #04121c; border-color: var(--cyan); font-weight: 600; }
 button.primary:hover:not(:disabled) { background: #7cecff; }
 button.danger { border-color: rgba(255, 93, 108, 0.5); color: #ffb3bb; }
@@ -129,3 +130,41 @@ button.round.on { background: var(--danger); border-color: var(--danger); animat
   #toasts { left: 10px; right: 10px; bottom: calc(84px + env(safe-area-inset-bottom)); align-items: stretch; }
   .toast { max-width: none; }
 }
+
+/* 操作模式（開車／飛行／穿戴）：以 iPhone 拇指操作為準 */
+body.controlling .hud, body.controlling .panel, body.controlling #mobileBar { display: none !important; }
+#ctlHud { position: fixed; inset: 0; z-index: 7; pointer-events: none; }
+#ctlHud > * { pointer-events: auto; }
+.ctl-top {
+  position: fixed; top: calc(10px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
+  display: flex; gap: 8px; align-items: center; white-space: nowrap;
+  background: var(--glass); border: 1px solid var(--line); border-radius: 999px; padding: 6px 6px 6px 16px;
+  backdrop-filter: blur(10px);
+}
+#ctlLabel { font-weight: 600; max-width: 42vw; overflow: hidden; text-overflow: ellipsis; }
+#joy {
+  position: fixed; left: calc(22px + env(safe-area-inset-left)); bottom: calc(26px + env(safe-area-inset-bottom));
+  width: 150px; height: 150px; border-radius: 50%; touch-action: none;
+  background: radial-gradient(circle, rgba(56, 225, 255, 0.12), rgba(56, 225, 255, 0.04));
+  border: 2px solid var(--line);
+}
+#joyKnob {
+  position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%;
+  background: rgba(56, 225, 255, 0.35); border: 2px solid var(--cyan); box-shadow: 0 0 18px rgba(56, 225, 255, 0.35);
+  pointer-events: none;
+}
+.ctl-btns {
+  position: fixed; right: calc(22px + env(safe-area-inset-right)); bottom: calc(26px + env(safe-area-inset-bottom));
+  display: grid; grid-template-columns: auto auto; gap: 12px; align-items: end; justify-items: center;
+}
+.ctl-round { width: 62px; height: 62px; border-radius: 50%; font-size: 22px; padding: 0; touch-action: none; background: var(--glass); }
+.ctl-round.big { width: 86px; height: 86px; font-size: 34px; grid-column: 2; background: rgba(255, 209, 102, 0.18); border-color: #ffd166; }
+.ctl-round.on, .ctl-round:active { background: rgba(56, 225, 255, 0.35); }
+.ctl-hint {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(190px + env(safe-area-inset-bottom));
+  font-size: 13px; color: var(--muted); pointer-events: none !important; text-align: center; width: 80vw;
+  transition: opacity 0.8s;
+}
+.ctl-hint.fade { opacity: 0; }
+.modal .choices { display: flex; gap: 10px; margin: 14px 0; }
+.modal .choices button { flex: 1; font-size: 18px; padding: 16px 6px; }

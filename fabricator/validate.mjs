@@ -99,8 +99,20 @@ async function runChecks(dir) {
       if (meta.placement === 'on_selection' && !(context.selection || []).length) {
         warnings.push('placement 是 on_selection 但目前沒有選取物件，會改放在使用者前方');
       }
+      if (meta.controls != null && !['drive', 'fly', 'wear'].includes(meta.controls)) {
+        errors.push('meta.json 的 controls 只能是 drive / fly / wear（不能操作的東西就不要寫）');
+      }
+      if (meta.wearSlot != null && !['right_hand', 'left_hand', 'head'].includes(meta.wearSlot)) {
+        errors.push('meta.json 的 wearSlot 只能是 right_hand / left_hand / head');
+      }
       meta.name = name;
-      report.meta = { name, description: String(meta.description || '').trim(), placement: meta.placement };
+      report.meta = {
+        name,
+        description: String(meta.description || '').trim(),
+        placement: meta.placement,
+        controls: meta.controls || null,
+        wearSlot: meta.controls === 'wear' ? meta.wearSlot || 'right_hand' : null,
+      };
     } catch (e) {
       errors.push(`meta.json 不是合法 JSON：${e.message}`);
     }
@@ -195,6 +207,33 @@ async function runChecks(dir) {
         errors.push(`userData.update() 執行錯誤：${e.message}`);
       }
     }
+  }
+
+  // ---- 操作鉤子試跑 60 幀（開車／飛行／穿戴時每格會被呼叫） ----
+  const hook = built.object.userData?.onControl;
+  if (hook !== undefined && typeof hook !== 'function') errors.push('userData.onControl 必須是函式');
+  if (typeof hook === 'function') {
+    for (let f = 0; f < 60; f += 1) {
+      const st = {
+        mode: meta?.controls || 'drive',
+        speed: Math.sin(f / 10) * 8,
+        steer: Math.sin(f / 7),
+        throttle: Math.cos(f / 9),
+        lift: Math.sin(f / 5),
+        action: f === 10,
+        actionHeld: f >= 10 && f < 20,
+        t: f / 60,
+      };
+      try {
+        hook.call(built.object, st, 1 / 60);
+      } catch (e) {
+        errors.push(`userData.onControl() 執行錯誤：${e.message}`);
+        break;
+      }
+    }
+    if (!meta?.controls) warnings.push('有 onControl 但 meta.json 沒寫 controls，使用者按「操作」時要自己選模式');
+  } else if (meta?.controls && meta.controls !== 'wear') {
+    warnings.push('controls 是 drive／fly 但沒有 userData.onControl，輪子不會轉、也沒有燈光細節');
   }
 
   // ---- 統計 ----

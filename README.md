@@ -15,6 +15,7 @@ No page reloads, no rebuilds — you never leave the world.
 - **Stack and compose** — drag objects onto each other, select several, and save them as a reusable part.
 - **Build from what you built** — a generated part can spawn other parts with `ctx.spawn(...)`, up to 8 levels deep.
 - **Modify in place** — select an AI-made object and say *"make it red"*; the new version replaces it where it stands.
+- **Drive, fly and wear what you build** — select an object and press ▶ 操作 [operate]: cars drive, flying cars fly, gloves go on your hand. Phones get a thumb joystick and an ⚡ action button; computers use WASD and Space.
 - **Everything persists** — the scene and the toolbox are saved automatically; close the tab and come back later.
 - **Desktop, phone and VR** — mouse and keyboard, a touch-friendly phone layout, and an experimental WebXR mode (grab and stack with controllers).
 
@@ -42,6 +43,8 @@ for (let i = 0; i < 8; i++) {
   cube.position.set(Math.sin(angle) * 2.2, 0, -Math.cos(angle) * 2.2);
 }
 ```
+
+Parts can also declare `controls` (`drive` / `fly` / `wear`) in `meta.json` and react to the joystick with `root.userData.onControl(s, dt)` — spinning wheels, brake lights, a clenching fist.
 
 ## Requirements
 
@@ -79,6 +82,22 @@ The in-app labels are in Traditional Chinese; the English meaning is in brackets
 Typed or spoken commands that run locally (no AI): *save as part called turret*, *undo*, *delete*, *ungroup*, *duplicate 3* — or the Chinese equivalents 「把這疊存成零件，叫砲台」「復原」「刪除」「拆開」「複製 3 個」.
 
 Prompts can be written in any language Codex understands; part names follow the language of your request.
+
+## Operate things: drive, fly, wear
+
+Select an object and press **▶ 操作** [operate], or say *drive*, *fly*, *wear* (「開車」「起飛」「戴上」).
+
+| Mode | What happens | Phone | Computer |
+|---|---|---|---|
+| 🚗 Drive | A chase camera follows the vehicle | Left joystick: up = throttle, down = reverse, left/right = steer | W / S, A / D |
+| 🛸 Fly | Like driving, plus altitude; it banks into turns | Joystick + ▲ ▼ | WASD + E / Q |
+| 🧤 Wear | The object sits on your right hand in first person; walk and look around | Joystick to walk, drag to look, ⟲ turns the item | WASD, drag |
+
+⚡ (Space) is the action button. Parts made with the current spec say how they are operated and react through their own `onControl` hook: the demo kart rolls and steers its wheels, lights its brake lights and fires nitro; the demo glove clenches a fist and flares. Older parts are guessed from their names, and if the workshop can't tell, it asks. Leave with ✕ 離開 [exit] or Esc. The phone controls were designed and tested for the iPhone first.
+
+Easter egg: wear something named "Infinity Gauntlet" (無限手套) and press ⚡.
+
+<img src="docs/screenshot-drive.jpg" width="220" alt="Driving the demo kart on a phone"> <img src="docs/screenshot-wear.jpg" width="220" alt="Wearing the demo glove on a phone">
 
 ## Use it from your phone (same network)
 
@@ -129,6 +148,7 @@ rm -rf /tmp/vw-test-data
 DATA_DIR=/tmp/vw-test-data PORT=5311 HOST=0.0.0.0 npm start &
 npm test                 # desktop: stack, save as part, delete and undo, persistence
 npm run test:mobile      # iPhone emulation over the LAN: access key, drawers, touch drag, multi-select
+npm run test:control     # iPhone: drive, switch to fly, wear, chooser, snap; plus WASD on a desktop
 WITH_CODEX=1 npm test    # also runs a real build and modification (uses Codex quota)
 ```
 
@@ -140,6 +160,7 @@ fabricator/AGENTS.md    the part spec given to Codex
 fabricator/validate.mjs the part validator (also run by Codex)
 public/runtime.mjs      part assembly shared by the browser and the validator (nesting and limits)
 public/app.js           the workshop: scene, selection, drag-to-stack, toolbox, voice, WebXR
+public/control.mjs      operation engine: drive, fly, wear (joystick, buttons, keyboard)
 public/index.html       page and help text
 examples/starter/       demo parts and scene loaded on first start
 launchd/                macOS background-service template and installer
@@ -152,7 +173,8 @@ tests/                  Playwright tests (desktop and phone)
 - VR mode (enter VR, grab and stack with controllers) has not been tested on a real headset yet, and you can't talk to build inside VR yet.
 - Headsets need HTTPS for WebXR, and browsers need HTTPS for the web microphone. Over plain LAN http, use the phone keyboard's dictation instead.
 - The AI can't see what it built; it only gets the validator's numbers. The next idea is to render a screenshot and let it review its own work.
-- No physics yet: objects don't fall or topple.
+- No physics yet: objects don't fall or topple, and vehicles drive straight through other objects.
+- Operate mode isn't available inside VR yet.
 
 ## License
 

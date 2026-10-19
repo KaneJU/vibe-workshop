@@ -139,6 +139,54 @@
       },
       "basedOn": null,
       "createdAt": "2026-10-19T11:28:54.813Z"
+    },
+    {
+      "id": "p_mvfah2sjefdb80",
+      "name": "氮氣卡丁車",
+      "kind": "generated",
+      "description": "可駕駛的紅色小卡丁車，輪胎隨車速旋轉、前輪轉向，倒車亮起紅燈並可按動作鍵噴出藍色氮氣火焰。",
+      "prompt": "做一台可以開的小卡丁車，輪子會轉、前輪會轉向，倒車時煞車燈會亮，按動作鍵會噴出氮氣加速火焰",
+      "size": [
+        1.608,
+        0.834,
+        1.94
+      ],
+      "placement": "front",
+      "controls": "drive",
+      "wearSlot": null,
+      "stats": {
+        "meshes": 107,
+        "triangles": 5008,
+        "lights": 0,
+        "updaters": 1,
+        "spawns": 1
+      },
+      "basedOn": null,
+      "createdAt": "2026-10-19T13:27:28.099Z"
+    },
+    {
+      "id": "p_mvfagvke215a5c",
+      "name": "鋼鐵手套",
+      "kind": "generated",
+      "description": "可戴在右手的紅金鋼鐵手套，按動作鍵切換握拳與張掌，掌心反應爐隨握拳綻放強光。",
+      "prompt": "做一隻可以戴在右手的鋼鐵手套，按動作鍵會握拳，掌心的反應爐發出強光",
+      "size": [
+        0.137,
+        0.089,
+        0.273
+      ],
+      "placement": "front",
+      "controls": "wear",
+      "wearSlot": "right_hand",
+      "stats": {
+        "meshes": 98,
+        "triangles": 6780,
+        "lights": 0,
+        "updaters": 1,
+        "spawns": 1
+      },
+      "basedOn": null,
+      "createdAt": "2026-10-19T13:27:18.734Z"
     }
   ]
 }

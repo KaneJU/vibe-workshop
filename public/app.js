@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { createRuntime } from './runtime.mjs';
+import { createControlEngine, guessMode, MODES } from './control.mjs';
 
 const $ = (sel) => document.querySelector(sel);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -95,6 +96,17 @@ const undoStack = [];
 const pendingJobs = new Map();
 const isTouch = window.matchMedia('(hover: none)').matches;
 let multiMode = false; // 手機沒有 Shift：開「多選」後，點物件是加入／移出選取
+const engine = createControlEngine({
+  THREE,
+  scene,
+  camera,
+  controls,
+  world,
+  worldBox: (i) => worldBox(i),
+  dropToSupport: (i) => dropToSupport(i),
+  toast: (m) => toast(m),
+  instancesList: () => [...instances.values()],
+});
 
 async function api(method, url, body, opts = {}) {
   const res = await fetch(url, {
@@ -190,6 +202,10 @@ function snapshot() {
   const q = new THREE.Quaternion();
   const s = new THREE.Vector3();
   return [...instances.values()].map((i) => {
+    const held = engine.savedTransformFor(i);
+    if (held) {
+      return { id: i.id, partId: i.partId, position: held.position.toArray(), quaternion: held.quaternion.toArray(), scale: held.scale.toArray() };
+    }
     i.object.updateMatrixWorld(true);
     i.object.matrixWorld.decompose(p, q, s);
     return { id: i.id, partId: i.partId, position: p.toArray(), quaternion: q.toArray(), scale: s.toArray() };
@@ -351,7 +367,7 @@ let drag = null;
 renderer.domElement.addEventListener(
   'pointerdown',
   (e) => {
-    if (e.button !== 0 || renderer.xr.isPresenting) return;
+    if (e.button !== 0 || renderer.xr.isPresenting || engine.active) return;
     closeDrawers();
     setPointer(e);
     raycaster.setFromCamera(pointer, camera);
@@ -644,6 +660,22 @@ function sceneSummary() {
 
 function handleLocalCommand(t) {
   let m;
+  if (/^(開車|駕駛|開它|開走|開起來|drive( it)?)[。.!！]?$/i.test(t)) {
+    openControl('drive');
+    return true;
+  }
+  if (/^(起飛|飛行|飛起來|讓它飛|fly( it)?)[。.!！]?$/i.test(t)) {
+    openControl('fly');
+    return true;
+  }
+  if (/^(戴上|穿上|穿戴|戴起來|拿起來|wear( it)?|put (it )?on)[。.!！]?$/i.test(t)) {
+    openControl('wear');
+    return true;
+  }
+  if (/^(離開|下車|脫下|停止操作|exit|stop)[。.!！]?$/i.test(t)) {
+    stopControl();
+    return true;
+  }
   // English: "save as part called turret" / "undo" / "delete" / "ungroup" / "duplicate 3"
   if ((m = t.match(/^(?:save|group)(?: (?:this|these|it|them|the stack))? as (?:a )?part(?: (?:called|named) ["']?(.+?)["']?)?[.!]?$/i))) {
     groupSelected(m[1]);
@@ -1077,9 +1109,168 @@ for (let i = 0; i < 2; i += 1) {
   rig.add(grip);
 }
 
+// ---------------- 操作模式（開車／飛行／穿戴） ----------------
+
+let controlTarget = null; // 等使用者在選單選模式的物件
+
+function openControl(mode) {
+  if (renderer.xr.isPresenting) return toast('VR 裡還不能用操作模式');
+  const sel = engine.active ? [engine.session.inst] : selectedInstances();
+  if (sel.length !== 1) return toast('先選一個物件，再按「▶ 操作」');
+  const inst = sel[0];
+  const chosen = mode || guessMode(runtime.parts.get(inst.partId));
+  if (chosen) return startControl(inst, chosen);
+  controlTarget = inst;
+  $('#ctlChooser').hidden = false;
+}
+
+function startControl(inst, mode, { remember = false } = {}) {
+  const part = runtime.parts.get(inst.partId);
+  if (engine.active) stopControl();
+  pushUndo();
+  closeDrawers();
+  clearSelection();
+  $('#prompt').blur();
+  engine.start(inst, mode, part);
+  document.body.classList.add('controlling');
+  $('#ctlHud').hidden = false;
+  $('#ctlLabel').textContent = `${MODES[mode]}：${partName(inst.partId)}`;
+  $('#btnUp').hidden = mode !== 'fly';
+  $('#btnDown').hidden = mode !== 'fly';
+  $('#btnSpin').hidden = mode !== 'wear';
+  const hint = $('#ctlHint');
+  hint.classList.remove('fade');
+  clearTimeout(startControl.hintTimer);
+  startControl.hintTimer = setTimeout(() => hint.classList.add('fade'), 5000);
+  hint.textContent = {
+    drive: isTouch ? '左下搖桿：往上是油門、往下倒車、左右轉彎' : 'W／S 油門倒車、A／D 轉彎、空白鍵動作、Esc 離開',
+    fly: isTouch ? '搖桿控制方向，▲▼ 升降' : 'WASD 方向、E 升 Q 降、空白鍵動作、Esc 離開',
+    wear: isTouch ? '搖桿走路，拖曳畫面看四周，⚡ 是動作' : 'WASD 走路、拖曳看四周、空白鍵動作、Esc 離開',
+  }[mode];
+  // 使用者自己選的模式記在零件上，下次按「操作」就直接用
+  if (remember && part && part.controls !== mode) {
+    api('POST', `/api/parts/${part.id}/controls`, { controls: mode })
+      .then(() => (part.controls = mode))
+      .catch(() => {});
+  }
+}
+
+function stopControl() {
+  if (!engine.active) return;
+  const inst = engine.session.inst;
+  engine.stop();
+  joyReset();
+  document.body.classList.remove('controlling');
+  $('#ctlHud').hidden = true;
+  if (instances.has(inst.id)) selectOnly(inst.id);
+  scheduleSave();
+}
+
+// 搖桿：手指在圓盤裡拖曳 → x（左右）、y（往上為正）
+const joy = $('#joy');
+const knob = $('#joyKnob');
+let joyId = null;
+function joyMove(e) {
+  const r = joy.getBoundingClientRect();
+  let dx = (e.clientX - (r.left + r.width / 2)) / (r.width / 2);
+  let dy = (e.clientY - (r.top + r.height / 2)) / (r.height / 2);
+  const len = Math.hypot(dx, dy);
+  if (len > 1) {
+    dx /= len;
+    dy /= len;
+  }
+  engine.input.x = dx;
+  engine.input.y = -dy;
+  knob.style.transform = `translate(${dx * r.width * 0.32}px, ${dy * r.height * 0.32}px)`;
+}
+function joyReset() {
+  joyId = null;
+  engine.input.x = 0;
+  engine.input.y = 0;
+  knob.style.transform = '';
+}
+joy.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  joyId = e.pointerId;
+  joy.setPointerCapture(e.pointerId);
+  joyMove(e);
+});
+joy.addEventListener('pointermove', (e) => {
+  if (e.pointerId === joyId) joyMove(e);
+});
+for (const type of ['pointerup', 'pointercancel']) {
+  joy.addEventListener(type, (e) => {
+    if (e.pointerId === joyId) joyReset();
+  });
+}
+
+// 按住才有作用的按鈕（升、降、動作）
+function holdButton(el, down, up) {
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    el.classList.add('on');
+    down();
+  });
+  for (const type of ['pointerup', 'pointercancel']) {
+    el.addEventListener(type, () => {
+      el.classList.remove('on');
+      up();
+    });
+  }
+}
+holdButton($('#btnUp'), () => (engine.input.lift = 1), () => (engine.input.lift = 0));
+holdButton($('#btnDown'), () => (engine.input.lift = -1), () => (engine.input.lift = 0));
+holdButton($('#btnAction'), () => engine.pressAction(true), () => engine.pressAction(false));
+$('#btnSpin').onclick = () => engine.spinWorn(Math.PI / 6);
+$('#ctlExit').onclick = () => stopControl();
+$('#ctlSwitch').onclick = () => {
+  controlTarget = engine.session?.inst || null;
+  $('#ctlChooser').hidden = false;
+};
+document.querySelectorAll('#ctlChooser [data-mode]').forEach((b) =>
+  b.addEventListener('click', () => {
+    $('#ctlChooser').hidden = true;
+    if (controlTarget && instances.has(controlTarget.id)) startControl(controlTarget, b.dataset.mode, { remember: true });
+    controlTarget = null;
+  }),
+);
+$('#ctlCancel').onclick = () => {
+  $('#ctlChooser').hidden = true;
+  controlTarget = null;
+};
+
+// 電腦鍵盤：WASD／方向鍵、空白鍵動作、E 升 Q 降、Esc 離開
+const heldKeys = new Set();
+function controlKey(e, down) {
+  const k = e.key.toLowerCase();
+  if (down && k === 'escape') {
+    stopControl();
+    return;
+  }
+  const map = { w: 'up', arrowup: 'up', s: 'down', arrowdown: 'down', a: 'left', arrowleft: 'left', d: 'right', arrowright: 'right', e: 'rise', q: 'sink', ' ': 'action' };
+  const name = map[k];
+  if (!name) return;
+  e.preventDefault();
+  if (down) heldKeys.add(name);
+  else heldKeys.delete(name);
+  if (name === 'action') engine.pressAction(down);
+  if (joyId !== null) return; // 正在用搖桿就不蓋掉
+  engine.input.x = (heldKeys.has('right') ? 1 : 0) - (heldKeys.has('left') ? 1 : 0);
+  engine.input.y = (heldKeys.has('up') ? 1 : 0) - (heldKeys.has('down') ? 1 : 0);
+  engine.input.lift = (heldKeys.has('rise') ? 1 : 0) - (heldKeys.has('sink') ? 1 : 0);
+}
+window.addEventListener('keyup', (e) => {
+  if (engine.active) controlKey(e, false);
+});
+
 // ---------------- 介面事件 ----------------
 
 window.addEventListener('keydown', (e) => {
+  if (engine.active) {
+    controlKey(e, true);
+    return;
+  }
   if (e.target.closest?.('input, textarea')) {
     if (e.key === 'Escape') e.target.blur();
     return;
@@ -1128,6 +1319,7 @@ const ACTIONS = {
   smaller: () => scaleSelected(1 / 1.1),
   del: deleteSelected,
   undo,
+  control: () => openControl(),
   multi: () => {
     multiMode = !multiMode;
     document.querySelectorAll('[data-act=multi]').forEach((b) => b.classList.toggle('on', multiMode));
@@ -1185,10 +1377,11 @@ renderer.setAnimationLoop(() => {
       }
     }
   }
+  engine.update(dt);
   for (const h of selHelpers.values()) h.update();
   animateHolograms(t);
   pad.material.opacity = 0.4 + 0.15 * Math.sin(t * 1.5);
-  if (!renderer.xr.isPresenting) controls.update();
+  if (!renderer.xr.isPresenting && !engine.ownsCamera) controls.update();
   renderer.render(scene, camera);
 });
 
@@ -1241,6 +1434,10 @@ window.__ws = {
   clearSelection,
   spawnFromLibrary,
   worldBox,
+  engine,
+  openControl,
+  startControl,
+  stopControl,
   screenOf(id, where = 'center') {
     const b = worldBox(instances.get(id));
     const p = b.getCenter(new THREE.Vector3());

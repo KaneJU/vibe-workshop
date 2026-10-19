@@ -103,6 +103,35 @@ the player's position and the parts library.
   The part is rotated so that its -Z axis points where the user is looking:
   "in front of me" = negative z, "behind me" = positive z, "left" = negative x, "right" = positive x.
 
+## Controls (optional): things the user can drive, fly or wear
+
+The workshop has an operation engine. If the object is something you drive, fly or wear, declare it in `meta.json`:
+
+- `"controls": "drive"` for cars, karts, tanks, bikes; `"fly"` for flying cars, planes, drones, spaceships;
+  `"wear"` for gloves, gauntlets, hats, helmets, swords or anything held in the hand. Leave it out otherwise.
+- For `wear`, also set `"wearSlot"`: `"right_hand"` (default), `"left_hand"` or `"head"`.
+
+The engine moves the whole part itself — never move or rotate the root. While the user operates it, the engine
+calls an optional hook on the root every frame:
+
+```js
+root.userData.onControl = (s, dt) => {
+  // s.mode: 'drive' | 'fly' | 'wear'
+  // s.speed: m/s along the part's +Z (negative = reversing)
+  // s.steer: -1..1, positive = turning right    s.throttle: -1..1    s.lift: -1..1 (fly only)
+  // s.action: true only on the frame the ⚡ button is pressed    s.actionHeld: true while it is held
+};
+```
+
+- Vehicles: make each wheel its own Object3D whose origin is the wheel center (names `wheel_fl`, `wheel_fr`,
+  `wheel_rl`, `wheel_rr`). In `onControl`, roll them with `wheel.rotation.x += s.speed * dt / radius` (the axle is
+  the part's X axis — build wheels so that local X is the axle), and steer the front wheels with a parent pivot:
+  `pivot.rotation.y = -s.steer * 0.45`. Add touches the user will enjoy: brake lights when `s.throttle < 0`,
+  thruster glow for `fly`, a horn flash or boost on `s.action`.
+- Wearables: build at real size (a glove ≈ 0.25 m long, fingers pointing to +Z). The engine scales it and holds it in
+  front of the user's view. Use `s.action` for a satisfying move: clench a fist, snap fingers, swing, glow burst.
+- `onControl` must be cheap and must not throw; the validator runs it for 60 frames with fake input.
+
 ## Modes
 
 - `create` — build a new part from the request. The selection (if any) is context:
