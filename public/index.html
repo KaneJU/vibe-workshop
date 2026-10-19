@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>Vibe 工坊</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/vendor/three/build/three.module.js",
+          "three/addons/": "/vendor/three/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <header class="hud top">
+      <div class="brand">VIBE <span>工坊</span></div>
+      <div id="status" class="status">啟動中…</div>
+      <div class="spacer"></div>
+      <button id="vrBtn" class="ghost" hidden>進入 VR</button>
+      <button id="selToggle" class="ghost touch-only" title="選取與打造進度">☰</button>
+      <button id="libToggle" class="ghost touch-only" title="工具箱">🧰</button>
+      <button id="helpBtn" class="ghost" title="操作說明"><span class="long">操作說明</span><span class="short">？</span></button>
+    </header>
+
+    <aside class="panel left">
+      <section>
+        <h3>選取</h3>
+        <div id="selInfo" class="muted">點一下物件來選取（Shift＋點可多選）</div>
+        <div class="actions" id="selActions">
+          <button data-act="group" title="G">存成零件</button>
+          <button data-act="ungroup">拆開</button>
+          <button data-act="dup" title="⌘D">複製</button>
+          <button data-act="rotL" title="Q">⟲ 轉</button>
+          <button data-act="rotR" title="E">轉 ⟳</button>
+          <button data-act="bigger" title="R">放大</button>
+          <button data-act="smaller" title="F">縮小</button>
+          <button data-act="del" class="danger" title="Delete">刪除</button>
+        </div>
+        <div class="actions">
+          <button data-act="undo" title="⌘Z">↶ 復原</button>
+        </div>
+      </section>
+      <section class="grow">
+        <h3>打造進度</h3>
+        <div id="jobs"><div class="muted">還沒有打造任務</div></div>
+      </section>
+    </aside>
+
+    <aside class="panel right">
+      <h3>工具箱 <span id="libCount" class="muted"></span></h3>
+      <div id="library"><div class="muted">空的。說出你想要的東西，Codex 會幫你做。</div></div>
+    </aside>
+
+    <footer class="hud bottom">
+      <label id="modifyWrap" class="chip" hidden><input type="checkbox" id="modifyChk" /> 改造選取的物件</label>
+      <input id="prompt" placeholder="說或打：給我一個發光的方塊…（按 / 開始輸入）" autocomplete="off" />
+      <button id="micBtn" class="round" title="語音輸入">🎙</button>
+      <button id="sendBtn" class="primary">打造</button>
+    </footer>
+
+    <div id="mobileBar">
+      <button data-act="multi">多選</button>
+      <button data-act="group">存成零件</button>
+      <button data-act="ungroup">拆開</button>
+      <button data-act="dup">複製</button>
+      <button data-act="rotL">⟲</button>
+      <button data-act="rotR">⟳</button>
+      <button data-act="bigger">＋</button>
+      <button data-act="smaller">－</button>
+      <button data-act="del" class="danger">刪除</button>
+      <button data-act="undo">↶</button>
+    </div>
+
+    <div id="toasts"></div>
+
+    <div id="help" class="modal" hidden>
+      <div class="card">
+        <h2>操作說明</h2>
+        <ul>
+          <li><b>看：</b>拖曳空白處轉視角，右鍵拖曳平移，滾輪拉近拉遠</li>
+          <li><b>選：</b>點物件選取，Shift＋點多選，Esc 取消</li>
+          <li><b>疊：</b>拖曳物件移動，拖到別的物件上面就會疊上去</li>
+          <li><b>調：</b>Q / E 旋轉、R / F 放大縮小、Delete 刪除、⌘D 複製、⌘Z 復原</li>
+          <li><b>打造：</b>在下方說或打你要什麼，按「打造」或 Enter；🎙 是語音</li>
+          <li><b>改造：</b>選一個 AI 做的物件，勾「改造選取的物件」，再說要怎麼改</li>
+          <li><b>組合：</b>選好幾個疊好的物件，按「存成零件」（或按 G），它就進工具箱</li>
+          <li><b>套層：</b>工具箱裡的零件可以當材料：「用砲台在我周圍排一圈」</li>
+          <li><b>直接說的指令：</b>「把這疊存成零件，叫砲台」「復原」「刪除」「拆開」「複製 3 個」（英文也行：save as part called turret / undo / delete / ungroup / duplicate 3）</li>
+          <li><b>手機：</b>一指轉視角、兩指縮放平移；點物件選取、按住拖曳移動；上方那排按鈕有「多選」「存成零件」等；☰ 看打造進度、🧰 開工具箱；語音請用鍵盤上的 🎙 聽寫</li>
+        </ul>
+        <p class="muted">每次打造都會用到 Codex 額度。東西會自動存在這台電腦上，關掉再開都還在。</p>
+        <button id="helpClose" class="primary">知道了</button>
+      </div>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

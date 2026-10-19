@@ -1,0 +1,1252 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+import { createRuntime } from './runtime.mjs';
+
+const $ = (sel) => document.querySelector(sel);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const r3 = (v) => Math.round(v * 1000) / 1000;
+const T0 = performance.now();
+const now = () => (performance.now() - T0) / 1000;
+
+// ---------------- 場景 ----------------
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.xr.enabled = true;
+$('#app').appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05080f);
+scene.fog = new THREE.Fog(0x05080f, 20, 48);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.65;
+
+// 相機掛在 rig 底下：桌面模式 rig 在原點；進 VR 時把 rig 移到相機站的位置
+const rig = new THREE.Group();
+scene.add(rig);
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.03, 200);
+camera.position.set(0, 1.75, 4.6);
+rig.add(camera);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.7, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.12;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.minDistance = 0.5;
+controls.maxDistance = 30;
+controls.update();
+
+scene.add(new THREE.HemisphereLight(0xcfeaff, 0x0a1020, 0.8));
+const sun = new THREE.DirectionalLight(0xffffff, 2.0);
+sun.position.set(5, 9, 6);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -12, right: 12, top: 12, bottom: -12, near: 0.5, far: 40 });
+sun.shadow.camera.updateProjectionMatrix();
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.02;
+scene.add(sun);
+
+const floor = new THREE.Mesh(
+  new THREE.CircleGeometry(30, 72),
+  new THREE.MeshStandardMaterial({ color: 0x0b1422, roughness: 0.92, metalness: 0.05 }),
+);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+const grid = new THREE.GridHelper(40, 80, 0x2fd6ff, 0x16384d);
+grid.material.transparent = true;
+grid.material.opacity = 0.3;
+grid.material.depthWrite = false;
+grid.position.y = 0.002;
+scene.add(grid);
+const pad = new THREE.Mesh(
+  new THREE.RingGeometry(1.15, 1.2, 96),
+  new THREE.MeshBasicMaterial({ color: 0x38e1ff, transparent: true, opacity: 0.55, side: THREE.DoubleSide }),
+);
+pad.rotation.x = -Math.PI / 2;
+pad.position.y = 0.004;
+scene.add(pad);
+
+const world = new THREE.Group(); // 所有使用者的物件（每個 instance 是 world 的直接子節點）
+world.name = 'world';
+scene.add(world);
+const fx = new THREE.Group(); // 打造中的全息框
+scene.add(fx);
+
+// ---------------- 狀態 ----------------
+
+const player = { position: new THREE.Vector3() };
+const runtime = createRuntime({ THREE, player });
+let library = [];
+let loaded = false;
+const instances = new Map(); // id -> { id, partId, object, restBox, updaters, bornAt }
+const selection = new Set();
+const selHelpers = new Map();
+const undoStack = [];
+const pendingJobs = new Map();
+const isTouch = window.matchMedia('(hover: none)').matches;
+let multiMode = false; // 手機沒有 Shift：開「多選」後，點物件是加入／移出選取
+
+async function api(method, url, body, opts = {}) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+    ...opts,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function toast(msg, ms = 4500) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  $('#toasts').appendChild(el);
+  setTimeout(() => el.remove(), ms);
+}
+
+const newInstanceId = () => `i_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+const partName = (id) => runtime.parts.get(id)?.name ?? '未知零件';
+const partKind = (id) => runtime.parts.get(id)?.kind;
+
+async function loadModule(id) {
+  if (runtime.modules.has(id)) return true;
+  try {
+    runtime.registerModule(id, await import(`/parts/${id}.js`));
+    return true;
+  } catch (e) {
+    console.error(e);
+    toast(`⚠️ 零件程式載入失敗：${partName(id)}`);
+    return false;
+  }
+}
+
+// ---------------- 物件 ----------------
+
+function addInstance(rec, { save = true } = {}) {
+  const built = runtime.instantiate(rec.partId);
+  const object = built.object;
+  object.updateMatrixWorld(true);
+  // 剛建好、動畫還沒跑之前的外框＝「靜止外框」，疊放與擺放都用它，才不會因為彈跳中途而算錯高度
+  const restBox = new THREE.Box3().setFromObject(object);
+  if (restBox.isEmpty()) restBox.set(new THREE.Vector3(-0.2, 0, -0.2), new THREE.Vector3(0.2, 0.4, 0.2));
+  object.position.fromArray(rec.position);
+  object.quaternion.fromArray(rec.quaternion);
+  object.scale.fromArray(rec.scale);
+  object.userData.instanceId = rec.id;
+  object.traverse((o) => {
+    if (o.isMesh) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+    }
+  });
+  world.add(object);
+  const inst = { id: rec.id, partId: rec.partId, object, restBox, updaters: built.updaters, bornAt: now() };
+  instances.set(rec.id, inst);
+  const problems = [...built.errors, ...built.warnings];
+  if (problems.length) toast(`⚠️ ${partName(rec.partId)}：${problems[0]}`);
+  if (save) scheduleSave();
+  updateStatus();
+  return inst;
+}
+
+function disposeObject(obj) {
+  obj.traverse((o) => {
+    o.geometry?.dispose?.();
+    const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+    for (const m of mats) m.dispose?.();
+  });
+}
+
+function removeInstance(id, { save = true } = {}) {
+  const inst = instances.get(id);
+  if (!inst) return;
+  deselect(id);
+  inst.object.removeFromParent();
+  disposeObject(inst.object);
+  instances.delete(id);
+  if (save) scheduleSave();
+  updateStatus();
+}
+
+function worldBox(inst) {
+  inst.object.updateMatrixWorld(true);
+  return inst.restBox.clone().applyMatrix4(inst.object.matrixWorld);
+}
+
+function snapshot() {
+  const p = new THREE.Vector3();
+  const q = new THREE.Quaternion();
+  const s = new THREE.Vector3();
+  return [...instances.values()].map((i) => {
+    i.object.updateMatrixWorld(true);
+    i.object.matrixWorld.decompose(p, q, s);
+    return { id: i.id, partId: i.partId, position: p.toArray(), quaternion: q.toArray(), scale: s.toArray() };
+  });
+}
+
+function pushUndo(state = JSON.stringify(snapshot())) {
+  undoStack.push(state);
+  if (undoStack.length > 80) undoStack.shift();
+}
+
+function undo() {
+  const s = undoStack.pop();
+  if (!s) return toast('沒有可以復原的動作');
+  restore(JSON.parse(s));
+  scheduleSave();
+  toast('↶ 已復原');
+}
+
+function restore(list) {
+  clearSelection();
+  for (const id of [...instances.keys()]) removeInstance(id, { save: false });
+  for (const rec of list) if (runtime.parts.has(rec.partId)) addInstance(rec, { save: false });
+}
+
+let saveTimer = null;
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => saveNow(), 400);
+}
+async function saveNow(keepalive = false) {
+  clearTimeout(saveTimer);
+  if (!loaded) return; // 還沒載入完就存，會把存檔洗成空的
+  try {
+    await api('PUT', '/api/scene', { instances: snapshot() }, keepalive ? { keepalive: true } : {});
+  } catch (e) {
+    toast(`⚠️ 存檔失敗：${e.message}`);
+  }
+}
+window.addEventListener('pagehide', () => saveNow(true));
+
+// ---------------- 選取 ----------------
+
+const selectedInstances = () => [...selection].map((id) => instances.get(id)).filter(Boolean);
+
+function addToSelection(id) {
+  const inst = instances.get(id);
+  if (!inst || selection.has(id)) return;
+  selection.add(id);
+  const helper = new THREE.BoxHelper(inst.object, 0x38e1ff);
+  helper.material.depthTest = false;
+  helper.material.transparent = true;
+  helper.renderOrder = 10;
+  scene.add(helper);
+  selHelpers.set(id, helper);
+  updateSelectionUI();
+}
+function deselect(id) {
+  if (!selection.delete(id)) return;
+  const h = selHelpers.get(id);
+  if (h) {
+    h.removeFromParent();
+    h.geometry.dispose();
+    h.material.dispose();
+    selHelpers.delete(id);
+  }
+  updateSelectionUI();
+}
+function clearSelection() {
+  for (const id of [...selection]) deselect(id);
+}
+function selectOnly(id) {
+  clearSelection();
+  addToSelection(id);
+}
+function toggleSelect(id) {
+  if (selection.has(id)) deselect(id);
+  else addToSelection(id);
+}
+
+function updateSelectionUI() {
+  const sel = selectedInstances();
+  const info = $('#selInfo');
+  if (!sel.length) info.textContent = isTouch ? '點物件選取（要選好幾個，先按上方「多選」）' : '點一下物件來選取（Shift＋點可多選）';
+  else if (sel.length === 1) info.textContent = `已選：${partName(sel[0].partId)}`;
+  else info.textContent = `已選 ${sel.length} 個：${[...new Set(sel.map((i) => partName(i.partId)))].slice(0, 4).join('、')}`;
+  document.querySelectorAll('#selActions button, #mobileBar button').forEach((b) => {
+    if (!['undo', 'multi'].includes(b.dataset.act)) b.disabled = !sel.length;
+  });
+  const hasCombo = sel.some((i) => partKind(i.partId) === 'composite');
+  document.querySelectorAll('[data-act=ungroup]').forEach((b) => (b.disabled = !hasCombo));
+  $('#mobileBar').classList.toggle('show', sel.length > 0 || multiMode);
+  const canModify = sel.length === 1 && partKind(sel[0].partId) === 'generated';
+  $('#modifyWrap').hidden = !canModify;
+  if (!canModify) $('#modifyChk').checked = false;
+}
+
+function updateStatus() {
+  const n = pendingJobs.size;
+  $('#status').textContent = `物件 ${instances.size} · 零件 ${library.length}${n ? ` · 打造中 ${n}` : ''}`;
+}
+
+// ---------------- 點選、拖曳、疊放 ----------------
+
+const raycaster = new THREE.Raycaster();
+raycaster.params.Line.threshold = 0.02;
+raycaster.params.Points.threshold = 0.02;
+const downRay = new THREE.Raycaster();
+downRay.params.Line.threshold = 0.005;
+downRay.params.Points.threshold = 0.005;
+const DOWN = new THREE.Vector3(0, -1, 0);
+const UP = new THREE.Vector3(0, 1, 0);
+const FLOOR_PLANE = new THREE.Plane(UP, 0);
+const pointer = new THREE.Vector2();
+
+function setPointer(e) {
+  const r = renderer.domElement.getBoundingClientRect();
+  pointer.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+}
+function instanceOf(obj) {
+  let o = obj;
+  while (o && o.parent !== world) o = o.parent;
+  return o ? instances.get(o.userData.instanceId) : null;
+}
+function pickFromRaycaster() {
+  for (const h of raycaster.intersectObjects(world.children, true)) {
+    const inst = instanceOf(h.object);
+    if (inst) return { inst, point: h.point };
+  }
+  return null;
+}
+
+// 在 (x, z) 這個位置、這麼大的底面，往下看最高的支撐面在哪（沒有東西就是地板 0）
+function supportHeight(x, z, half, exclude) {
+  const targets = [];
+  for (const i of instances.values()) if (!exclude.has(i)) targets.push(i.object);
+  if (!targets.length) return 0;
+  let best = 0;
+  const probe = new THREE.Vector3();
+  for (const [fx, fz] of [[0, 0], [0.55, 0.55], [-0.55, 0.55], [0.55, -0.55], [-0.55, -0.55]]) {
+    downRay.set(probe.set(x + fx * half.x, 80, z + fz * half.z), DOWN);
+    const hit = downRay.intersectObjects(targets, true)[0];
+    if (hit && hit.point.y > best) best = hit.point.y;
+  }
+  return best;
+}
+
+function dropToSupport(inst) {
+  const b = worldBox(inst);
+  if (b.isEmpty()) return;
+  const c = b.getCenter(new THREE.Vector3());
+  const half = b.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+  inst.object.position.y += supportHeight(c.x, c.z, half, new Set([inst])) - b.min.y;
+}
+
+let down = null;
+let drag = null;
+
+renderer.domElement.addEventListener(
+  'pointerdown',
+  (e) => {
+    if (e.button !== 0 || renderer.xr.isPresenting) return;
+    closeDrawers();
+    setPointer(e);
+    raycaster.setFromCamera(pointer, camera);
+    const hit = pickFromRaycaster();
+    down = { x: e.clientX, y: e.clientY, hit: hit?.inst || null };
+    if (!hit) return; // 點在空白處：交給 OrbitControls 轉視角
+    controls.enabled = false;
+    if (e.shiftKey || multiMode) {
+      toggleSelect(hit.inst.id);
+      return;
+    }
+    if (!selection.has(hit.inst.id)) selectOnly(hit.inst.id);
+    const moving = selectedInstances();
+    const box = worldBox(hit.inst);
+    const bottom = new THREE.Vector3((box.min.x + box.max.x) / 2, box.min.y, (box.min.z + box.max.z) / 2);
+    drag = {
+      primary: hit.inst,
+      moving,
+      offset: hit.inst.object.position.clone().sub(bottom),
+      half: box.getSize(new THREE.Vector3()).multiplyScalar(0.5),
+      before: JSON.stringify(snapshot()),
+      started: false,
+      pointerId: e.pointerId,
+    };
+    renderer.domElement.setPointerCapture(e.pointerId);
+  },
+  { capture: true },
+);
+
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  if (!drag.started) {
+    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) < 4) return;
+    drag.started = true;
+  }
+  setPointer(e);
+  raycaster.setFromCamera(pointer, camera);
+  const exclude = new Set(drag.moving);
+  const targets = [floor];
+  for (const i of instances.values()) if (!exclude.has(i)) targets.push(i.object);
+  const hit = raycaster.intersectObjects(targets, true)[0];
+  const p = hit ? hit.point.clone() : raycaster.ray.intersectPlane(FLOOR_PLANE, new THREE.Vector3());
+  if (!p) return;
+  const y = supportHeight(p.x, p.z, drag.half, exclude);
+  const delta = new THREE.Vector3(p.x, y, p.z).add(drag.offset).sub(drag.primary.object.position);
+  for (const inst of drag.moving) inst.object.position.add(delta);
+});
+
+function endPointer(e) {
+  if (drag) {
+    if (drag.started) {
+      pushUndo(drag.before);
+      scheduleSave();
+    }
+    try {
+      renderer.domElement.releasePointerCapture(drag.pointerId);
+    } catch {
+      /* 已釋放 */
+    }
+    drag = null;
+  } else if (down && !down.hit && !e.shiftKey && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 4) {
+    clearSelection();
+  }
+  down = null;
+  controls.enabled = true;
+}
+renderer.domElement.addEventListener('pointerup', endPointer);
+renderer.domElement.addEventListener('pointercancel', endPointer);
+
+// ---------------- 調整動作 ----------------
+
+function keepBottom(inst, mutate) {
+  const before = worldBox(inst).min.y;
+  mutate();
+  inst.object.position.y += before - worldBox(inst).min.y;
+}
+function rotateSelected(dir) {
+  const sel = selectedInstances();
+  if (!sel.length) return;
+  pushUndo();
+  for (const i of sel) keepBottom(i, () => i.object.rotateY((dir * Math.PI) / 12));
+  scheduleSave();
+}
+function scaleSelected(f) {
+  const sel = selectedInstances();
+  if (!sel.length) return;
+  pushUndo();
+  for (const i of sel) {
+    keepBottom(i, () => {
+      const s = THREE.MathUtils.clamp(i.object.scale.x * f, 0.05, 50) / i.object.scale.x;
+      i.object.scale.multiplyScalar(s);
+    });
+  }
+  scheduleSave();
+}
+function deleteSelected() {
+  const sel = selectedInstances();
+  if (!sel.length) return toast('先選取要刪除的物件');
+  pushUndo();
+  for (const i of sel) removeInstance(i.id, { save: false });
+  scheduleSave();
+}
+function duplicateSelected(times = 1) {
+  const sel = selectedInstances();
+  if (!sel.length) return toast('先選取要複製的物件');
+  pushUndo();
+  const box = new THREE.Box3();
+  for (const i of sel) box.union(worldBox(i));
+  const step = box.getSize(new THREE.Vector3()).x + 0.15;
+  const right = new THREE.Vector3();
+  camera.getWorldDirection(right);
+  right.cross(UP).setY(0).normalize();
+  const created = [];
+  for (let k = 1; k <= Math.min(times, 20); k += 1) {
+    for (const i of sel) {
+      created.push(
+        addInstance(
+          {
+            id: newInstanceId(),
+            partId: i.partId,
+            position: i.object.position.clone().addScaledVector(right, step * k).toArray(),
+            quaternion: i.object.quaternion.toArray(),
+            scale: i.object.scale.toArray(),
+          },
+          { save: false },
+        ),
+      );
+    }
+  }
+  clearSelection();
+  for (const c of created) addToSelection(c.id);
+  scheduleSave();
+}
+
+async function groupSelected(name) {
+  const sel = selectedInstances();
+  if (!sel.length) return toast('先選取要組合的物件（Shift＋點可多選）');
+  if (!name) {
+    name = window.prompt('幫這個零件取個名字', sel.length === 1 ? `${partName(sel[0].partId)}組` : '新零件');
+    if (!name) return;
+  }
+  name = name.trim();
+  if (!name) return;
+  const box = new THREE.Box3();
+  for (const i of sel) box.union(worldBox(i));
+  const base = new THREE.Vector3((box.min.x + box.max.x) / 2, box.min.y, (box.min.z + box.max.z) / 2);
+  const children = sel.map((i) => ({
+    partId: i.partId,
+    position: i.object.position.clone().sub(base).toArray(),
+    quaternion: i.object.quaternion.toArray(),
+    scale: i.object.scale.toArray(),
+  }));
+  let rec;
+  try {
+    rec = await api('POST', '/api/composite', { name, children, size: box.getSize(new THREE.Vector3()).toArray() });
+  } catch (e) {
+    return toast(`⚠️ 存零件失敗：${e.message}`);
+  }
+  library.push(rec);
+  runtime.addPart(rec);
+  renderLibrary();
+  pushUndo();
+  for (const i of sel) removeInstance(i.id, { save: false });
+  const inst = addInstance(
+    { id: newInstanceId(), partId: rec.id, position: base.toArray(), quaternion: [0, 0, 0, 1], scale: [1, 1, 1] },
+    { save: false },
+  );
+  selectOnly(inst.id);
+  scheduleSave();
+  toast(`🧩 已存成零件「${rec.name}」，工具箱裡可以再拿出來用`);
+}
+
+function ungroupSelected() {
+  const sel = selectedInstances().filter((i) => partKind(i.partId) === 'composite');
+  if (!sel.length) return toast('選取的不是組合零件');
+  pushUndo();
+  const created = [];
+  for (const inst of sel) {
+    const part = runtime.parts.get(inst.partId);
+    inst.object.updateMatrixWorld(true);
+    for (const c of part.children) {
+      const m = new THREE.Matrix4().compose(
+        new THREE.Vector3().fromArray(c.position),
+        new THREE.Quaternion().fromArray(c.quaternion),
+        new THREE.Vector3().fromArray(c.scale),
+      );
+      m.premultiply(inst.object.matrixWorld);
+      const p = new THREE.Vector3();
+      const q = new THREE.Quaternion();
+      const s = new THREE.Vector3();
+      m.decompose(p, q, s);
+      created.push(
+        addInstance(
+          { id: newInstanceId(), partId: c.partId, position: p.toArray(), quaternion: q.toArray(), scale: s.toArray() },
+          { save: false },
+        ),
+      );
+    }
+    removeInstance(inst.id, { save: false });
+  }
+  clearSelection();
+  for (const c of created) addToSelection(c.id);
+  scheduleSave();
+  toast(`拆成 ${created.length} 個物件`);
+}
+
+// ---------------- 擺放 ----------------
+
+const playerFloor = () => new THREE.Vector3(player.position.x, 0, player.position.z);
+function forwardFlat() {
+  const d = new THREE.Vector3();
+  camera.getWorldDirection(d);
+  d.y = 0;
+  if (d.lengthSq() < 1e-6) d.set(0, 0, -1);
+  return d.normalize();
+}
+function overlapsXZ(p, r, self) {
+  for (const i of instances.values()) {
+    if (i === self) continue;
+    const b = worldBox(i);
+    const dx = Math.max(b.min.x - p.x, 0, p.x - b.max.x);
+    const dz = Math.max(b.min.z - p.z, 0, p.z - b.max.z);
+    if (Math.hypot(dx, dz) < r) return true;
+  }
+  return false;
+}
+function frontSpot(inst) {
+  const size = worldBox(inst).getSize(new THREE.Vector3());
+  const r = Math.max(size.x, size.z) / 2 + 0.08;
+  const fwd = forwardFlat();
+  const right = new THREE.Vector3().crossVectors(fwd, UP).normalize();
+  const base = playerFloor().addScaledVector(fwd, 1.5 + r);
+  for (const k of [0, 1, -1, 2, -2, 3, -3, 4, -4]) {
+    const p = base.clone().addScaledVector(right, k * (2 * r + 0.1));
+    if (!overlapsXZ(p, r, inst)) return p;
+  }
+  return base;
+}
+function placeInstance(inst, placement, anchorId) {
+  const anchor = anchorId ? instances.get(anchorId) : null;
+  if (placement === 'around_player') {
+    // 原點放在使用者腳下，零件的 -Z 對齊使用者面向的方向（AGENTS.md 的約定）
+    const fwd = forwardFlat();
+    inst.object.position.copy(playerFloor());
+    inst.object.rotation.set(0, Math.atan2(-fwd.x, -fwd.z), 0);
+    inst.object.position.y -= worldBox(inst).min.y;
+    return;
+  }
+  if (placement === 'on_selection' && anchor) {
+    const b = worldBox(anchor);
+    inst.object.quaternion.copy(anchor.object.quaternion);
+    inst.object.position.set((b.min.x + b.max.x) / 2, b.max.y, (b.min.z + b.max.z) / 2);
+  } else {
+    inst.object.position.copy(frontSpot(inst));
+    const p = inst.object.position;
+    inst.object.rotation.set(0, Math.atan2(player.position.x - p.x, player.position.z - p.z), 0); // +Z 面向使用者
+  }
+  dropToSupport(inst);
+}
+
+// ---------------- 打造（Codex） ----------------
+
+function describeInstance(i) {
+  const b = worldBox(i);
+  return {
+    instanceId: i.id,
+    partId: i.partId,
+    name: partName(i.partId),
+    kind: partKind(i.partId),
+    size: b.getSize(new THREE.Vector3()).toArray().map(r3),
+    position: i.object.position.toArray().map(r3),
+    top: r3(b.max.y),
+  };
+}
+function sceneSummary() {
+  return [...instances.values()]
+    .map((i) => ({ i, d: i.object.position.distanceTo(player.position) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 40)
+    .map(({ i }) => {
+      const b = worldBox(i);
+      return {
+        name: partName(i.partId),
+        partId: i.partId,
+        position: i.object.position.toArray().map(r3),
+        size: b.getSize(new THREE.Vector3()).toArray().map(r3),
+      };
+    });
+}
+
+function handleLocalCommand(t) {
+  let m;
+  // English: "save as part called turret" / "undo" / "delete" / "ungroup" / "duplicate 3"
+  if ((m = t.match(/^(?:save|group)(?: (?:this|these|it|them|the stack))? as (?:a )?part(?: (?:called|named) ["']?(.+?)["']?)?[.!]?$/i))) {
+    groupSelected(m[1]);
+    return true;
+  }
+  if (/^(delete|remove)( it| this| these| selected)?[.!]?$/i.test(t)) {
+    deleteSelected();
+    return true;
+  }
+  if (/^(ungroup|split)( it| this)?[.!]?$/i.test(t)) {
+    ungroupSelected();
+    return true;
+  }
+  if ((m = t.match(/^(?:duplicate|copy)(?: it| this)?(?: (\d+)(?: times?)?)?[.!]?$/i))) {
+    duplicateSelected(Number(m[1] || 1));
+    return true;
+  }
+  if (
+    (m = t.match(
+      /^(?:把)?(?:這[些個疊堆組]?|選取的?)?(?:東西)?(?:存成|存為|做成|組成|變成)(?:一個)?零件(?:[，,、\s]*(?:叫做?|名為|命名為|取名為?)\s*[「『"]?(.+?)[」』"]?)?[。.!！]?$/,
+    ))
+  ) {
+    groupSelected(m[1]);
+    return true;
+  }
+  if (/^(復原|還原|上一步|undo)[。!！]?$/i.test(t)) {
+    undo();
+    return true;
+  }
+  if (/^(刪除|刪掉|移除)(它|這個|這些|選取的?)?[。!！]?$/.test(t)) {
+    deleteSelected();
+    return true;
+  }
+  if (/^(拆開|解散|分解)(它|這個)?[。!！]?$/.test(t)) {
+    ungroupSelected();
+    return true;
+  }
+  if ((m = t.match(/^複製(?:它|這個)?(?:\s*(\d+)\s*[個份次]?)?[。!！]?$/))) {
+    duplicateSelected(Number(m[1] || 1));
+    return true;
+  }
+  return false;
+}
+
+async function submitPrompt(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return;
+  $('#prompt').value = '';
+  if (handleLocalCommand(text)) return;
+  const sel = selectedInstances();
+  const modify = $('#modifyChk').checked && sel.length === 1 && partKind(sel[0].partId) === 'generated';
+  const body = {
+    prompt: text,
+    mode: modify ? 'modify' : 'create',
+    basePartId: modify ? sel[0].partId : null,
+    selection: sel.map(describeInstance),
+    scene: sceneSummary(),
+    player: player.position.toArray().map(r3),
+  };
+  let res;
+  try {
+    res = await api('POST', '/api/generate', body);
+  } catch (e) {
+    return toast(`⚠️ ${e.message}`);
+  }
+  const ctx = {
+    job: res.job,
+    modify,
+    basePartId: body.basePartId,
+    selectionIds: sel.map((i) => i.id),
+    anchorId: sel[0]?.id || null,
+    holo: createHologram(modify ? sel[0] : null),
+    card: createJobCard(res.job),
+  };
+  pendingJobs.set(res.job.id, ctx);
+  if (isTouch) {
+    $('#prompt').blur();
+    toast('🔧 Codex 開始打造（約 20–60 秒，進度在 ☰）');
+  }
+  updateStatus();
+  pollJob(ctx);
+}
+
+function createHologram(onInst) {
+  const g = new THREE.Group();
+  const box = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(0.7, 0.7, 0.7)),
+    new THREE.LineBasicMaterial({ color: 0x38e1ff, transparent: true, opacity: 0.8 }),
+  );
+  box.position.y = 0.35;
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.55, 0.012, 8, 64),
+    new THREE.MeshBasicMaterial({ color: 0x38e1ff, transparent: true, opacity: 0.7 }),
+  );
+  ring.rotation.x = Math.PI / 2;
+  ring.position.y = 0.02;
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.02, 0.02, 1.6, 8, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0x38e1ff, transparent: true, opacity: 0.25 }),
+  );
+  beam.position.y = 0.8;
+  g.add(box, ring, beam);
+  if (onInst) {
+    const b = worldBox(onInst);
+    g.position.set((b.min.x + b.max.x) / 2, b.min.y, (b.min.z + b.max.z) / 2);
+    g.scale.setScalar(THREE.MathUtils.clamp(b.getSize(new THREE.Vector3()).length() / 1.2, 0.6, 2.5));
+  } else {
+    g.position.copy(playerFloor().addScaledVector(forwardFlat(), 1.9));
+  }
+  g.userData = { box, ring, beam, born: now() };
+  fx.add(g);
+  return g;
+}
+function animateHolograms(t) {
+  for (const g of fx.children) {
+    const { box, ring, beam, born } = g.userData;
+    const k = t - born;
+    box.rotation.y = k * 0.8;
+    box.material.opacity = 0.45 + 0.35 * Math.abs(Math.sin(k * 2));
+    ring.scale.setScalar(1 + 0.15 * Math.sin(k * 3));
+    beam.material.opacity = 0.15 + 0.15 * Math.abs(Math.sin(k * 4));
+  }
+}
+function removeHologram(g) {
+  if (!g) return;
+  g.removeFromParent();
+  disposeObject(g);
+}
+
+function createJobCard(job) {
+  const jobsEl = $('#jobs');
+  if (jobsEl.querySelector(':scope > .muted')) jobsEl.innerHTML = '';
+  const el = document.createElement('div');
+  el.className = 'job running';
+  el.innerHTML =
+    '<div class="jtitle"></div><div class="jline">準備中…</div><div class="jerr" hidden></div>' +
+    '<button class="jcancel">取消</button>';
+  el.querySelector('.jtitle').textContent = `${job.mode === 'modify' ? '改造：' : ''}「${job.prompt}」`;
+  el.querySelector('.jcancel').onclick = () =>
+    api('POST', `/api/jobs/${job.id}/cancel`, {}).catch((e) => toast(e.message));
+  jobsEl.prepend(el);
+  return el;
+}
+function updateJobCard(card, job) {
+  card.className = `job ${job.status}`;
+  const secs = Math.round((job.elapsedMs || 0) / 1000);
+  const last = job.log[job.log.length - 1] || '';
+  const line = card.querySelector('.jline');
+  if (job.status === 'queued') line.textContent = '⏳ 排隊中（同時最多做 2 個）';
+  else if (job.status === 'running') line.textContent = `🔧 ${secs}s · ${last}`;
+  else if (job.status === 'done') line.textContent = `✅ ${job.part?.name}（${secs} 秒）`;
+  else if (job.status === 'cancelled') line.textContent = '🛑 已取消';
+  else if (job.status === 'error') line.textContent = `⚠️ 失敗（${secs} 秒）`;
+  const err = card.querySelector('.jerr');
+  if (job.status === 'error') {
+    err.hidden = false;
+    err.textContent = job.error || '';
+  }
+  if (['done', 'error', 'cancelled'].includes(job.status)) {
+    card.querySelector('.jcancel')?.remove();
+    if (job.status !== 'done' && !card.querySelector('.jretry')) {
+      const retry = document.createElement('button');
+      retry.className = 'jretry';
+      retry.textContent = '再試一次';
+      retry.onclick = () => submitPrompt(job.prompt);
+      card.appendChild(retry);
+    }
+  }
+}
+
+async function pollJob(ctx) {
+  let job = ctx.job;
+  let failures = 0;
+  for (;;) {
+    await sleep(1000);
+    try {
+      job = await api('GET', `/api/jobs/${job.id}`);
+      failures = 0;
+    } catch (e) {
+      failures += 1;
+      if (failures < 6) continue;
+      job = { ...job, status: 'error', error: `和伺服器失去聯絡：${e.message}` };
+    }
+    updateJobCard(ctx.card, job);
+    if (job.status === 'done') {
+      await finalizeJob(ctx, job);
+      break;
+    }
+    if (job.status === 'error' || job.status === 'cancelled') {
+      removeHologram(ctx.holo);
+      if (job.status === 'error') toast(`⚠️ 打造失敗：${String(job.error || '').split('\n')[0].slice(0, 120)}`);
+      break;
+    }
+  }
+  pendingJobs.delete(ctx.job.id);
+  updateStatus();
+}
+
+function replaceInstancePart(inst, newPartId) {
+  const oldBottom = worldBox(inst).min.y;
+  const rec = {
+    id: inst.id,
+    partId: newPartId,
+    position: inst.object.position.toArray(),
+    quaternion: inst.object.quaternion.toArray(),
+    scale: inst.object.scale.toArray(),
+  };
+  removeInstance(inst.id, { save: false });
+  const n = addInstance(rec, { save: false });
+  n.object.position.y += oldBottom - worldBox(n).min.y;
+  return n;
+}
+
+async function finalizeJob(ctx, job) {
+  const part = job.part;
+  if (!runtime.parts.has(part.id)) {
+    library.push(part);
+    runtime.addPart(part);
+  }
+  await loadModule(part.id);
+  renderLibrary();
+  removeHologram(ctx.holo);
+  if (ctx.modify) {
+    const targets = ctx.selectionIds.map((id) => instances.get(id)).filter((i) => i && i.partId === ctx.basePartId);
+    if (targets.length) {
+      pushUndo();
+      const replaced = targets.map((t) => replaceInstancePart(t, part.id));
+      clearSelection();
+      for (const r of replaced) addToSelection(r.id);
+      scheduleSave();
+      toast(`✨ 改造完成：${part.name}`);
+      return;
+    }
+  }
+  pushUndo();
+  const inst = addInstance(
+    { id: newInstanceId(), partId: part.id, position: [0, 0, 0], quaternion: [0, 0, 0, 1], scale: [1, 1, 1] },
+    { save: false },
+  );
+  placeInstance(inst, job.placement, ctx.anchorId);
+  selectOnly(inst.id);
+  scheduleSave();
+  toast(`✨ ${part.name} 完成了`);
+  if (job.warnings?.length) console.info('零件提醒', part.name, job.warnings);
+}
+
+// ---------------- 工具箱 ----------------
+
+function renderLibrary() {
+  const el = $('#library');
+  const visible = library.filter((p) => !p.hidden);
+  $('#libCount').textContent = visible.length ? `(${visible.length})` : '';
+  updateStatus();
+  if (!visible.length) {
+    el.innerHTML = '<div class="muted">空的。說出你想要的東西，Codex 會幫你做。</div>';
+    return;
+  }
+  // 同名的（例如改造過的新舊版）加上 #1、#2，照建立順序
+  const total = {};
+  for (const p of visible) total[p.name] = (total[p.name] || 0) + 1;
+  const seen = {};
+  const label = new Map();
+  for (const p of visible) {
+    seen[p.name] = (seen[p.name] || 0) + 1;
+    label.set(p.id, total[p.name] > 1 ? `${p.name} #${seen[p.name]}` : p.name);
+  }
+  el.innerHTML = '';
+  for (const p of [...visible].reverse()) {
+    const item = document.createElement('div');
+    item.className = 'part';
+    item.title = `${p.prompt ? `指令：${p.prompt}\n` : ''}點一下放進場景`;
+    item.innerHTML =
+      '<div class="name"><span class="n"></span><span class="tags"><span class="badge"></span>' +
+      '<button class="rm" title="從工具箱移除（場景裡已經放的不受影響）">×</button></span></div><div class="desc"></div>';
+    item.querySelector('.n').textContent = label.get(p.id);
+    const badge = item.querySelector('.badge');
+    badge.textContent = p.kind === 'composite' ? '組合' : 'AI';
+    if (p.kind === 'composite') badge.classList.add('combo');
+    const size = (p.size || []).map((v) => Number(v).toFixed(2)).join(' × ');
+    item.querySelector('.desc').textContent = `${p.description || ''}${size ? `（${size} m）` : ''}`;
+    item.onclick = () => spawnFromLibrary(p.id);
+    item.querySelector('.rm').onclick = async (ev) => {
+      ev.stopPropagation();
+      if (!window.confirm(`把「${label.get(p.id)}」從工具箱移除？\n場景裡已經放的不會消失。`)) return;
+      try {
+        await api('POST', `/api/parts/${p.id}/hide`, {});
+        p.hidden = true;
+        renderLibrary();
+      } catch (e) {
+        toast(`⚠️ ${e.message}`);
+      }
+    };
+    el.appendChild(item);
+  }
+}
+
+function spawnFromLibrary(partId) {
+  if (!runtime.parts.has(partId)) return;
+  closeDrawers();
+  pushUndo();
+  const inst = addInstance(
+    { id: newInstanceId(), partId, position: [0, 0, 0], quaternion: [0, 0, 0, 1], scale: [1, 1, 1] },
+    { save: false },
+  );
+  const part = runtime.parts.get(partId);
+  const anchor = selectedInstances().find((i) => i !== inst);
+  if (part.placement === 'around_player') placeInstance(inst, 'around_player');
+  else if (part.placement === 'on_selection' && anchor) placeInstance(inst, 'on_selection', anchor.id);
+  else placeInstance(inst, 'front');
+  selectOnly(inst.id);
+  scheduleSave();
+}
+
+// ---------------- 語音 ----------------
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recog = null;
+if (!SR || !window.isSecureContext) {
+  $('#micBtn').hidden = true;
+  $('#prompt').placeholder = '打字，或用鍵盤上的 🎙 聽寫…';
+}
+$('#micBtn').onclick = () => {
+  if (recog) {
+    recog.stop();
+    return;
+  }
+  recog = new SR();
+  recog.lang = 'zh-TW';
+  recog.interimResults = true;
+  recog.continuous = false;
+  let finalText = '';
+  recog.onresult = (ev) => {
+    let interim = '';
+    for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
+      const r = ev.results[i];
+      if (r.isFinal) finalText += r[0].transcript;
+      else interim += r[0].transcript;
+    }
+    $('#prompt').value = finalText + interim;
+  };
+  recog.onerror = (ev) => toast(`語音辨識：${ev.error}`);
+  recog.onend = () => {
+    $('#micBtn').classList.remove('on');
+    recog = null;
+    if (finalText.trim()) submitPrompt(finalText);
+  };
+  recog.start();
+  $('#micBtn').classList.add('on');
+};
+
+// ---------------- VR ----------------
+
+const vrBtn = $('#vrBtn');
+navigator.xr
+  ?.isSessionSupported('immersive-vr')
+  .then((ok) => {
+    if (ok) vrBtn.hidden = false;
+  })
+  .catch(() => {});
+let xrSession = null;
+const savedCam = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() };
+vrBtn.onclick = async () => {
+  if (xrSession) {
+    xrSession.end();
+    return;
+  }
+  try {
+    const session = await navigator.xr.requestSession('immersive-vr', {
+      optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'],
+    });
+    savedCam.pos.copy(camera.position);
+    savedCam.quat.copy(camera.quaternion);
+    const yaw = Math.atan2(camera.position.x - controls.target.x, camera.position.z - controls.target.z);
+    rig.position.set(camera.position.x, 0, camera.position.z);
+    rig.rotation.set(0, yaw, 0);
+    await renderer.xr.setSession(session);
+    xrSession = session;
+    vrBtn.textContent = '離開 VR';
+    session.addEventListener('end', () => {
+      xrSession = null;
+      vrBtn.textContent = '進入 VR';
+      rig.position.set(0, 0, 0);
+      rig.rotation.set(0, 0, 0);
+      camera.position.copy(savedCam.pos);
+      camera.quaternion.copy(savedCam.quat);
+      controls.update();
+    });
+  } catch (e) {
+    toast(`無法進入 VR：${e.message}`);
+  }
+};
+
+const controllerFactory = new XRControllerModelFactory();
+const tempMatrix = new THREE.Matrix4();
+function onXRSelectStart(e) {
+  const ctrl = e.target;
+  tempMatrix.identity().extractRotation(ctrl.matrixWorld);
+  raycaster.ray.origin.setFromMatrixPosition(ctrl.matrixWorld);
+  raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+  const hit = pickFromRaycaster();
+  if (!hit) return;
+  pushUndo();
+  selectOnly(hit.inst.id);
+  ctrl.attach(hit.inst.object);
+  ctrl.userData.held = hit.inst;
+}
+function onXRSelectEnd(e) {
+  const ctrl = e.target;
+  const inst = ctrl.userData.held;
+  if (!inst) return;
+  world.attach(inst.object);
+  ctrl.userData.held = null;
+  const yaw = new THREE.Euler().setFromQuaternion(inst.object.quaternion, 'YXZ').y;
+  inst.object.rotation.set(0, yaw, 0); // 放手時擺正，再落到下方的支撐面
+  dropToSupport(inst);
+  scheduleSave();
+}
+for (let i = 0; i < 2; i += 1) {
+  const ctrl = renderer.xr.getController(i);
+  const ray = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, -1)]),
+    new THREE.LineBasicMaterial({ color: 0x38e1ff }),
+  );
+  ray.scale.z = 4;
+  ctrl.add(ray);
+  ctrl.addEventListener('selectstart', onXRSelectStart);
+  ctrl.addEventListener('selectend', onXRSelectEnd);
+  rig.add(ctrl);
+  const grip = renderer.xr.getControllerGrip(i);
+  grip.add(controllerFactory.createControllerModel(grip));
+  rig.add(grip);
+}
+
+// ---------------- 介面事件 ----------------
+
+window.addEventListener('keydown', (e) => {
+  if (e.target.closest?.('input, textarea')) {
+    if (e.key === 'Escape') e.target.blur();
+    return;
+  }
+  const mod = e.metaKey || e.ctrlKey;
+  const k = e.key.toLowerCase();
+  if (mod && k === 'z') {
+    e.preventDefault();
+    undo();
+    return;
+  }
+  if (mod && k === 'd') {
+    e.preventDefault();
+    duplicateSelected();
+    return;
+  }
+  if (mod) return;
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    e.preventDefault();
+    deleteSelected();
+  } else if (k === 'q') rotateSelected(1);
+  else if (k === 'e') rotateSelected(-1);
+  else if (k === 'r') scaleSelected(1.1);
+  else if (k === 'f') scaleSelected(1 / 1.1);
+  else if (k === 'g') groupSelected();
+  else if (e.key === 'Escape') clearSelection();
+  else if (e.key === '/') {
+    e.preventDefault();
+    $('#prompt').focus();
+  }
+});
+$('#prompt').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) {
+    e.preventDefault();
+    submitPrompt(e.target.value);
+  }
+});
+$('#sendBtn').onclick = () => submitPrompt($('#prompt').value);
+const ACTIONS = {
+  group: () => groupSelected(),
+  ungroup: ungroupSelected,
+  dup: () => duplicateSelected(),
+  rotL: () => rotateSelected(1),
+  rotR: () => rotateSelected(-1),
+  bigger: () => scaleSelected(1.1),
+  smaller: () => scaleSelected(1 / 1.1),
+  del: deleteSelected,
+  undo,
+  multi: () => {
+    multiMode = !multiMode;
+    document.querySelectorAll('[data-act=multi]').forEach((b) => b.classList.toggle('on', multiMode));
+    updateSelectionUI();
+    toast(multiMode ? '多選：點物件加入或移出選取，選好按「存成零件」' : '已關閉多選');
+  },
+};
+document.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => ACTIONS[b.dataset.act]?.()));
+const leftPanel = $('.panel.left');
+const rightPanel = $('.panel.right');
+function closeDrawers() {
+  leftPanel.classList.remove('open');
+  rightPanel.classList.remove('open');
+}
+$('#libToggle').onclick = () => {
+  rightPanel.classList.toggle('open');
+  leftPanel.classList.remove('open');
+};
+$('#selToggle').onclick = () => {
+  leftPanel.classList.toggle('open');
+  rightPanel.classList.remove('open');
+};
+$('#helpBtn').onclick = () => ($('#help').hidden = false);
+$('#helpClose').onclick = () => ($('#help').hidden = true);
+function fitCamera() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.fov = camera.aspect < 0.75 ? 82 : 60; // 手機直拿畫面窄，視角放寬才看得到兩側
+  camera.updateProjectionMatrix();
+}
+fitCamera();
+window.addEventListener('resize', () => {
+  fitCamera();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ---------------- 主迴圈 ----------------
+
+let lastT = now();
+renderer.setAnimationLoop(() => {
+  const t = now();
+  const dt = Math.min(t - lastT, 0.1);
+  lastT = t;
+  camera.getWorldPosition(player.position);
+  for (const inst of instances.values()) {
+    if (!inst.updaters.length) continue;
+    const lt = t - inst.bornAt;
+    for (const u of inst.updaters) {
+      if (u.dead) continue;
+      try {
+        u.fn.call(u.obj, dt, lt);
+      } catch (err) {
+        u.dead = true;
+        console.error(err);
+        toast(`⚠️ ${partName(inst.partId)} 的動作出錯，已停止它的動畫`);
+      }
+    }
+  }
+  for (const h of selHelpers.values()) h.update();
+  animateHolograms(t);
+  pad.material.opacity = 0.4 + 0.15 * Math.sin(t * 1.5);
+  if (!renderer.xr.isPresenting) controls.update();
+  renderer.render(scene, camera);
+});
+
+// ---------------- 啟動 ----------------
+
+async function init() {
+  camera.getWorldPosition(player.position);
+  try {
+    const state = await api('GET', '/api/state');
+    library = state.library.parts || [];
+    runtime.setLibrary(library);
+    await Promise.all(library.filter((p) => p.kind === 'generated').map((p) => loadModule(p.id)));
+    for (const rec of state.scene.instances || []) if (runtime.parts.has(rec.partId)) addInstance(rec, { save: false });
+    loaded = true;
+    renderLibrary();
+    updateSelectionUI();
+    updateStatus();
+    if (!localStorage.getItem('vw_help_seen')) {
+      $('#help').hidden = false;
+      localStorage.setItem('vw_help_seen', '1');
+    }
+  } catch (e) {
+    $('#status').textContent = `連不到工坊伺服器：${e.message}`;
+  }
+}
+init();
+
+// 給自動測試用
+window.__ws = {
+  THREE,
+  scene,
+  camera,
+  controls,
+  instances,
+  selection,
+  runtime,
+  get library() {
+    return library;
+  },
+  get loaded() {
+    return loaded;
+  },
+  submitPrompt,
+  groupSelected,
+  ungroupSelected,
+  undo,
+  snapshot,
+  selectOnly,
+  addToSelection,
+  clearSelection,
+  spawnFromLibrary,
+  worldBox,
+  screenOf(id, where = 'center') {
+    const b = worldBox(instances.get(id));
+    const p = b.getCenter(new THREE.Vector3());
+    if (where === 'top') p.y = b.max.y - 0.01;
+    p.project(camera);
+    const r = renderer.domElement.getBoundingClientRect();
+    return { x: r.left + ((p.x + 1) / 2) * r.width, y: r.top + ((1 - p.y) / 2) * r.height };
+  },
+};

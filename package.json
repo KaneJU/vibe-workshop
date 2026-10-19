@@ -1,0 +1,26 @@
+{
+  "name": "vibe-workshop",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Talk to an AI inside a 3D/VR world and build things: stack them, save them as parts, and build new things out of them. three.js + WebXR + OpenAI Codex CLI.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KaneJU/vibe-workshop.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node tests/smoke.mjs",
+    "test:mobile": "node tests/mobile.mjs"
+  },
+  "dependencies": {
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "playwright": "^1.55.1"
+  }
+}

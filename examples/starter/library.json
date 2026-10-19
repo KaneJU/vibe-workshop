@@ -1,0 +1,144 @@
+{
+  "parts": [
+    {
+      "id": "p_mvf5xgk6a7157a",
+      "name": "藍光能量方塊",
+      "kind": "generated",
+      "description": "冰藍反應爐核心搭配金屬方框，在磁浮底座上緩緩浮動旋轉。",
+      "prompt": "給我一個發光的能量方塊，像鋼鐵人胸口那種藍光，會慢慢浮動旋轉",
+      "size": [
+        0.843,
+        1.105,
+        0.897
+      ],
+      "stats": {
+        "meshes": 101,
+        "triangles": 16960,
+        "lights": 0,
+        "updaters": 1,
+        "spawns": 1
+      },
+      "basedOn": null,
+      "createdAt": "2026-10-19T11:20:14.359Z",
+      "placement": "front"
+    },
+    {
+      "id": "p_mvf5y313807126",
+      "name": "八方能量環",
+      "kind": "generated",
+      "description": "八個藍光能量方塊環繞在你周圍，正面隨時朝向你。",
+      "prompt": "用藍光能量方塊在我周圍排一圈，八個，每個都面向我",
+      "size": [
+        5.222,
+        1.105,
+        5.294
+      ],
+      "stats": {
+        "meshes": 808,
+        "triangles": 135680,
+        "lights": 0,
+        "updaters": 16,
+        "spawns": 9
+      },
+      "basedOn": null,
+      "createdAt": "2026-10-19T11:20:43.480Z",
+      "placement": "around_player"
+    },
+    {
+      "id": "c_mvf61nt4b1daa6",
+      "name": "能量塔",
+      "kind": "composite",
+      "description": "由 2 個零件組成：藍光能量方塊",
+      "size": [
+        1.025,
+        1.991,
+        1.195
+      ],
+      "children": [
+        {
+          "partId": "p_mvf5xgk6a7157a",
+          "position": [
+            0,
+            0.951,
+            -0.085
+          ],
+          "quaternion": [
+            0,
+            -0.237625,
+            0,
+            0.971357
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "partId": "p_mvf5xgk6a7157a",
+          "position": [
+            0,
+            0,
+            0.217
+          ],
+          "quaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ]
+        }
+      ],
+      "createdAt": "2026-10-19T11:23:30.376Z"
+    },
+    {
+      "id": "p_mvf636ce28ed26",
+      "name": "轉頭小機器人",
+      "kind": "generated",
+      "description": "紅色外殼與綠色發光眼睛的小機器人，頭部會持續水平轉向你。",
+      "prompt": "把它改成紅色的，眼睛改成綠色",
+      "size": [
+        0.742,
+        1.006,
+        0.498
+      ],
+      "placement": "front",
+      "stats": {
+        "meshes": 31,
+        "triangles": 8776,
+        "lights": 0,
+        "updaters": 1,
+        "spawns": 1
+      },
+      "basedOn": null,
+      "createdAt": "2026-10-19T11:24:41.055Z"
+    },
+    {
+      "id": "p_mvf68m599575d1",
+      "name": "鋼鐵全息工作台",
+      "kind": "generated",
+      "description": "紅金裝甲工作台搭載反應爐光帶與緩緩旋轉的藍色全息投影圓盤。",
+      "prompt": "做一張鋼鐵人風格的工作台，桌面有發光的全息投影圓盤",
+      "size": [
+        2.124,
+        1.505,
+        1.105
+      ],
+      "placement": "front",
+      "stats": {
+        "meshes": 95,
+        "triangles": 8888,
+        "lights": 0,
+        "updaters": 1,
+        "spawns": 1
+      },
+      "basedOn": null,
+      "createdAt": "2026-10-19T11:28:54.813Z"
+    }
+  ]
+}

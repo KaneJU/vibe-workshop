@@ -1,0 +1,6 @@
+node_modules/
+data/
+jobs/
+logs/
+tests/out/
+.DS_Store
