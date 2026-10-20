@@ -573,6 +573,72 @@
       ],
       "createdAt": "2026-10-19T23:48:14.794Z",
       "thumb": true
+    },
+    {
+      "id": "p_vwblaster01",
+      "name": "能量槍",
+      "kind": "generated",
+      "description": "拿在右手的能量槍：按 ⚡（電腦按空白鍵）從槍口射出發光能量彈，打中標靶會計分、打中東西會把它推開。",
+      "size": [
+        0.06,
+        0.18,
+        0.318
+      ],
+      "placement": "front",
+      "controls": "wear",
+      "wearSlot": "right_hand",
+      "physics": {
+        "mass": 1.2
+      },
+      "tool": {
+        "kind": "blaster",
+        "rate": 4,
+        "speed": 28,
+        "range": 40,
+        "color": "#7cf8ff",
+        "size": 0.07,
+        "burst": 1,
+        "spread": 0
+      },
+      "stats": {
+        "meshes": 15,
+        "triangles": 1836,
+        "lights": 0,
+        "updaters": 1,
+        "spawns": 1
+      },
+      "basedOn": null,
+      "createdAt": "2026-10-20T06:00:00.000Z",
+      "thumb": true
+    },
+    {
+      "id": "p_vwtarget01",
+      "name": "標靶",
+      "kind": "generated",
+      "description": "立在地上的圓形標靶，被能量彈打中會晃動、亮一圈綠光；在遊戲裡打中一次得 1 分。",
+      "size": [
+        0.796,
+        1.348,
+        0.6
+      ],
+      "placement": "front",
+      "physics": {
+        "mass": 6,
+        "friction": 0.9
+      },
+      "target": {
+        "points": 1
+      },
+      "stats": {
+        "meshes": 8,
+        "triangles": 1712,
+        "lights": 0,
+        "updaters": 1,
+        "spawns": 1
+      },
+      "basedOn": null,
+      "createdAt": "2026-10-20T06:00:00.000Z",
+      "thumb": true
     }
   ]
 }

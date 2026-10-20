@@ -1,0 +1,9 @@
+{
+  "name": "能量槍",
+  "description": "拿在右手的能量槍：按 ⚡（電腦按空白鍵）從槍口射出發光能量彈，打中標靶會計分、打中東西會把它推開。",
+  "placement": "front",
+  "controls": "wear",
+  "wearSlot": "right_hand",
+  "physics": { "mass": 1.2 },
+  "tool": { "kind": "blaster", "rate": 4, "speed": 28, "range": 40, "color": "#7cf8ff" }
+}

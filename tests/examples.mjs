@@ -31,6 +31,7 @@ for (const name of readdirSync(EXAMPLES).filter((n) => !n.includes('.'))) {
         runtime: path.join(ROOT, 'public', 'runtime.mjs'),
         worldhost: path.join(ROOT, 'public', 'worldhost.mjs'),
         physics: path.join(ROOT, 'public', 'physics.mjs'),
+        tools: path.join(ROOT, 'public', 'tools.mjs'),
         partsDir: path.join(STARTER, 'parts'),
         libraryFile: path.join(STARTER, 'library.json'),
       },

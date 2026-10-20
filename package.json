@@ -22,6 +22,8 @@
     "test:examples": "node tests/examples.mjs",
     "test:xr": "node tests/xr.mjs",
     "test:photo": "node tests/photo.mjs",
+    "test:adventure": "node tests/adventure.mjs",
+    "test:rooms": "node tests/rooms.mjs",
     "bench": "node tests/bench.mjs"
   },
   "dependencies": {

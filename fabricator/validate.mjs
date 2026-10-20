@@ -104,6 +104,7 @@ async function runChecks(dir) {
   }
 
   const physMod = context.paths?.physics ? await import(pathToFileURL(context.paths.physics).href) : null;
+  const toolsMod = context.paths?.tools ? await import(pathToFileURL(context.paths.tools).href) : null; // 道具行為（能量槍、標靶）
   const hasPart = existsSync(path.join(dir, 'part.js'));
   const hasWorld = existsSync(path.join(dir, 'world.js'));
   if (hasPart && hasWorld) {
@@ -138,6 +139,7 @@ async function runChecks(dir) {
         errors.push('meta.json 的 wearSlot 只能是 right_hand / left_hand / head');
       }
       checkPhysicsMeta(meta, physMod, errors, warnings);
+      checkToolMeta(meta, toolsMod, errors, warnings);
       const type = meta.type == null ? (hasWorld ? null : 'part') : meta.type;
       if (hasWorld && !['environment', 'rule'].includes(type)) {
         errors.push('寫了 world.js，meta.json 的 type 要是 "environment" 或 "rule"');
@@ -155,6 +157,8 @@ async function runChecks(dir) {
         wearSlot: meta.controls === 'wear' ? meta.wearSlot || 'right_hand' : null,
         physics: physMod && !hasWorld ? physMod.normalizePhysics(meta.physics) : null,
         device: physMod && !hasWorld ? physMod.normalizeDevice(meta.device) : null,
+        tool: toolsMod && !hasWorld ? toolsMod.normalizeTool(meta.tool) : null,
+        target: toolsMod && !hasWorld ? toolsMod.normalizeTarget(meta.target) : null,
       };
     } catch (e) {
       errors.push(`meta.json 不是合法 JSON：${e.message}`);
@@ -366,6 +370,23 @@ async function runChecks(dir) {
 }
 
 // meta.json 的 physics／device 格式
+function checkToolMeta(meta, toolsMod, errors, warnings) {
+  const t = meta.tool;
+  if (t != null && toolsMod) {
+    const kinds = Object.keys(toolsMod.TOOL_KINDS);
+    if (typeof t !== 'object' || Array.isArray(t) || !kinds.includes(t.kind)) errors.push(`meta.json 的 tool 要是 { "kind": ${kinds.map((k) => `"${k}"`).join(' | ')} }`);
+    else {
+      for (const k of Object.keys(t)) if (!['kind', 'rate', 'speed', 'range', 'color', 'size', 'burst', 'spread'].includes(k)) warnings.push(`tool.${k} 不認得（只有 kind／rate／speed／range／color／size／burst／spread）`);
+      if (t.color != null && !/^#[0-9a-f]{6}$/i.test(String(t.color))) errors.push('tool.color 要是 "#rrggbb"');
+      if (meta.controls !== 'wear') warnings.push('道具（tool）通常要拿在手上：meta.json 加 "controls": "wear"');
+    }
+  }
+  const g = meta.target;
+  if (g != null && (typeof g !== 'object' || Array.isArray(g) || (g.points != null && !(Number.isFinite(g.points) && g.points >= 1 && g.points <= 100)))) {
+    errors.push('meta.json 的 target 要是 { "points": 1–100 }');
+  }
+}
+
 function checkPhysicsMeta(meta, physMod, errors, warnings) {
   const ph = meta.physics;
   if (ph != null) {

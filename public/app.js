@@ -6,8 +6,15 @@ import { createRuntime } from './runtime.mjs';
 import { createControlEngine, guessMode, MODES } from './control.mjs';
 import { createWorldManager } from './worlds.mjs';
 import { createPhysics, PHYS } from './physics.mjs';
+import { createAdventure, buildTitleScene, ADVENTURE_PARTS } from './adventure.mjs';
 
 const $ = (sel) => document.querySelector(sel);
+// 三種畫面：首頁（/）、冒險（/?play）、自由工坊（/?ws；舊網址帶 physics、safe 參數的也直接進工坊）
+const params = new URLSearchParams(window.location.search);
+const MODE = params.has('play') ? 'play' : params.has('ws') || params.has('physics') || params.has('safe') ? 'workshop' : 'title';
+document.body.classList.add(`mode-${MODE}`);
+let adventure = null;
+let titleScene = null;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const r3 = (v) => Math.round(v * 1000) / 1000;
 const T0 = performance.now();
@@ -245,6 +252,8 @@ const worlds = createWorldManager({
 });
 
 async function api(method, url, body, opts = {}) {
+  // 首頁和冒險模式只准寫冒險存檔：自由工坊的場景、工具箱、世界模組、打造一律不碰
+  if (MODE !== 'workshop' && method !== 'GET' && url !== '/api/adventure') throw new Error('冒險模式不會改動自由工坊');
   const res = await fetch(url, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
@@ -385,6 +394,12 @@ async function saveNow(keepalive = false) {
   clearTimeout(saveTimer);
   if (!loaded) return; // 還沒載入完就存，會把存檔洗成空的
   try {
+    if (MODE === 'play') {
+      const data = adventure?.saveData();
+      if (data) await api('PUT', '/api/adventure', { ...data, instances: snapshot() }, keepalive ? { keepalive: true } : {});
+      return;
+    }
+    if (MODE !== 'workshop') return;
     const body = { instances: snapshot(), ...(urlPhysics === null ? { physics: physicsOn } : {}) };
     await api('PUT', '/api/scene', body, keepalive ? { keepalive: true } : {});
   } catch (e) {
@@ -401,12 +416,15 @@ function addToSelection(id) {
   const inst = instances.get(id);
   if (!inst || selection.has(id)) return;
   selection.add(id);
-  const helper = new THREE.BoxHelper(inst.object, 0x38e1ff);
-  helper.material.depthTest = false;
-  helper.material.transparent = true;
-  helper.renderOrder = 10;
-  scene.add(helper);
-  selHelpers.set(id, helper);
+  if (MODE === 'workshop') {
+    // 選取框是工坊的工具；冒險模式不畫（抓著的東西有究極手的綠光）
+    const helper = new THREE.BoxHelper(inst.object, 0x38e1ff);
+    helper.material.depthTest = false;
+    helper.material.transparent = true;
+    helper.renderOrder = 10;
+    scene.add(helper);
+    selHelpers.set(id, helper);
+  }
   updateSelectionUI();
 }
 function deselect(id) {
@@ -530,11 +548,13 @@ renderer.domElement.addEventListener(
     closeDrawers();
     setPointer(e);
     raycaster.setFromCamera(pointer, camera);
-    const hit = pickFromRaycaster();
+    let hit = pickFromRaycaster();
+    // 冒險模式：只有這一關要搬的東西抓得起來，其他的當作空白處（拖了轉視角）
+    if (MODE === 'play' && hit && !adventure?.canGrab(hit.inst)) hit = null;
     down = { x: e.clientX, y: e.clientY, hit: hit?.inst || null };
     if (!hit) return; // 點在空白處：交給 OrbitControls 轉視角
     controls.enabled = false;
-    if (e.shiftKey || multiMode) {
+    if ((e.shiftKey || multiMode) && MODE === 'workshop') {
       toggleSelect(hit.inst.id);
       return;
     }
@@ -1581,7 +1601,7 @@ const vrBtn = $('#vrBtn');
 navigator.xr
   ?.isSessionSupported('immersive-vr')
   .then((ok) => {
-    if (ok) vrBtn.hidden = false;
+    if (ok && MODE === 'workshop') vrBtn.hidden = false; // 冒險模式還不支援 VR
   })
   .catch(() => {});
 let xrSession = null;
@@ -1864,6 +1884,11 @@ window.addEventListener('keydown', (e) => {
     controlKey(e, true);
     return;
   }
+  // 冒險模式不用工坊的快捷鍵（刪除、複製、存成零件…），Esc 是暫停選單
+  if (MODE !== 'workshop') {
+    if (e.key === 'Escape') adventure?.onEscape();
+    return;
+  }
   if (e.target.closest?.('input, textarea')) {
     if (e.key === 'Escape') e.target.blur();
     return;
@@ -1920,7 +1945,7 @@ $('#prompt').addEventListener('keydown', (e) => {
   }
 });
 $('#sendBtn').onclick = () => submitPrompt($('#prompt').value);
-const ACTIONS = {
+const WORKSHOP_ACTIONS = {
   group: () => groupSelected(),
   ungroup: ungroupSelected,
   dup: () => duplicateSelected(),
@@ -1941,6 +1966,7 @@ const ACTIONS = {
     toast(multiMode ? '多選：點物件加入或移出選取，選好按「存成零件」' : '已關閉多選');
   },
 };
+const ACTIONS = MODE === 'workshop' ? WORKSHOP_ACTIONS : {}; // 冒險模式的按鈕藏起來了；就算按到也不做事
 document.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => ACTIONS[b.dataset.act]?.()));
 const leftPanel = $('.panel.left');
 const rightPanel = $('.panel.right');
@@ -2028,6 +2054,13 @@ renderer.setAnimationLoop(() => {
     }
   }
   engine.update(dt);
+  adventure?.update(dt, t); // 在物理之前：吸附、救援搬動的東西這一格就讓物理跟過去
+  if (titleScene) {
+    titleScene.update(dt, t);
+    const a = t * 0.12;
+    camera.position.set(Math.sin(a) * 6.2, 2.4, Math.cos(a) * 6.2);
+    controls.target.set(0, 0.6, 0);
+  }
   worlds.update(dt, t);
   if (renderer.xr.isPresenting) updateXRGrabs();
   if (holdLiftDir && drag?.physics && drag.started) {
@@ -2051,8 +2084,111 @@ renderer.setAnimationLoop(() => {
 
 // ---------------- 啟動 ----------------
 
+// 冒險和首頁只載入用得到的內建零件（組合零件的子零件也要）
+async function loadPartsFor(ids) {
+  const need = new Set();
+  const visit = (id) => {
+    const p = runtime.parts.get(id);
+    if (!p || need.has(id)) return;
+    need.add(id);
+    for (const c of p.children || []) visit(c.partId);
+  };
+  ids.forEach(visit);
+  await Promise.all([...need].filter((id) => partKind(id) === 'generated').map((id) => loadModule(id)));
+}
+
+const goTo = async (url) => {
+  await saveNow();
+  window.location.href = url;
+};
+
+// 首頁：開始／繼續冒險、自由工坊（背景是小紅和能量塔在轉，不載入任何存檔、不寫任何東西）
+async function initTitle() {
+  $('#title').hidden = false;
+  envAdapter.pad(false);
+  try {
+    const [state, adv] = await Promise.all([api('GET', '/api/state'), api('GET', '/api/adventure')]);
+    library = state.library.parts || [];
+    runtime.setLibrary(library);
+    await loadPartsFor([...ADVENTURE_PARTS, 'c_mvfwneiy081798']);
+    titleScene = buildTitleScene({ THREE, scene, runtime });
+    const p = adv.adventure?.progress;
+    const names = ['點亮能量塔', '組裝探險車', '開到信號塔'];
+    if (p && p.level <= 3 && !(p.level === 1 && p.step === 'intro')) {
+      $('#titlePlay').textContent = `▶ 繼續冒險（第 ${p.level} 關：${names[p.level - 1]}）`;
+      $('#titleRestart').hidden = false;
+    } else if (p && p.level > 3) {
+      $('#titlePlay').textContent = '▶ 再玩一次冒險';
+      const best = p.best;
+      if (best) {
+        $('#titleSave').hidden = false;
+        $('#titleSave').textContent = `🏆 已通關 ${p.clears} 次 · 最佳 ${'★'.repeat(best.stars)} ${Math.floor(best.total / 60)}:${String(Math.round(best.total) % 60).padStart(2, '0')}`;
+      }
+    }
+    if (p && p.level > 3) $('#titlePlay').dataset.fresh = '1';
+  } catch (e) {
+    $('#titleSave').hidden = false;
+    $('#titleSave').textContent = `連不到工坊伺服器：${e.message}`;
+  }
+}
+$('#titlePlay').onclick = () => (window.location.href = $('#titlePlay').dataset.fresh ? '/?play&new' : '/?play');
+$('#titleRestart').onclick = () => (window.location.href = '/?play&new');
+$('#titleFree').onclick = () => (window.location.href = '/?ws');
+
+// 冒險：只用內建零件，進度和場景存在 adventure.json；物理一定開著，世界模組一律不載入
+async function initPlay() {
+  $('#status').textContent = '冒險載入中…';
+  envAdapter.pad(false);
+  try {
+    const [state, adv] = await Promise.all([api('GET', '/api/state'), api('GET', '/api/adventure')]);
+    library = state.library.parts || [];
+    runtime.setLibrary(library);
+    await loadPartsFor(ADVENTURE_PARTS);
+    const fresh = params.has('new');
+    if (fresh) window.history.replaceState(null, '', '/?play'); // 重新整理時不要又從頭開始
+    const saved = fresh ? null : adv.adventure;
+    for (const rec of saved?.instances || []) if (runtime.parts.has(rec.partId)) addInstance(rec, { save: false });
+    adventure = createAdventure({
+      THREE,
+      scene,
+      camera,
+      controls,
+      renderer,
+      runtime,
+      instances,
+      phys,
+      engine,
+      isTouch,
+      addInstance,
+      removeInstance,
+      worldBox,
+      glueTogether,
+      glueMembers,
+      newInstanceId,
+      startControl,
+      stopControl,
+      saveNow,
+      toast: (m, ms) => toast(m, ms),
+      goTo,
+    });
+    physicsOn = true;
+    renderPhysBtn();
+    if (!(await setPhysics(true, { persist: false, quiet: true, wake: false }))) throw new Error('物理引擎載入失敗，請重新整理');
+    loaded = true;
+    await adventure.init(fresh ? { progress: adv.adventure?.progress || null, fresh: true } : saved, { fresh });
+    if (!localStorage.getItem('vw_help_seen')) localStorage.setItem('vw_help_seen', '1'); // 之後進工坊不用再跳說明
+  } catch (e) {
+    console.error(e);
+    $('#advHud').hidden = false;
+    $('#advTitle').textContent = '冒險載入失敗';
+    $('#advText').textContent = e.message;
+  }
+}
+
 async function init() {
   camera.getWorldPosition(player.position);
+  if (MODE === 'title') return initTitle();
+  if (MODE === 'play') return initPlay();
   try {
     const state = await api('GET', '/api/state');
     library = state.library.parts || [];
@@ -2124,6 +2260,11 @@ window.__ws = {
   get holding() {
     return phys.holding;
   },
+  mode: MODE,
+  // 冒險模式的狀態（只讀；自動測試用來找東西在哪，不提供跳關）
+  get adventure() {
+    return adventure ? adventure.state() : null;
+  },
   screenOf(id, where = 'center') {
     const b = worldBox(instances.get(id));
     const p = b.getCenter(new THREE.Vector3());
@@ -2131,5 +2272,11 @@ window.__ws = {
     p.project(camera);
     const r = renderer.domElement.getBoundingClientRect();
     return { x: r.left + ((p.x + 1) / 2) * r.width, y: r.top + ((1 - p.y) / 2) * r.height };
+  },
+  // 世界座標 → 螢幕座標（測試用來找「要拖到哪裡」）
+  screenAt(x, y, z) {
+    const p = new THREE.Vector3(x, y, z).project(camera);
+    const r = renderer.domElement.getBoundingClientRect();
+    return { x: r.left + ((p.x + 1) / 2) * r.width, y: r.top + ((1 - p.y) / 2) * r.height, behind: p.z > 1 };
   },
 };

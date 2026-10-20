@@ -222,3 +222,83 @@ body:not(.physics-on) .phys-only { display: none !important; }
 .part.has-thumb, .wmod.has-thumb, .job.has-thumb { display: grid; grid-template-columns: 52px 1fr; column-gap: 9px; align-items: start; }
 .has-thumb > :not(.thumb) { grid-column: 2; }
 .has-thumb > .thumb { grid-column: 1; grid-row: 1 / span 4; width: 52px; height: 52px; border-radius: 8px; object-fit: cover; background: #0b1422; border: 1px solid var(--line); }
+
+/* ---------------- 首頁 ---------------- */
+a.brand { text-decoration: none; }
+body.mode-title .hud, body.mode-title .panel, body.mode-title #mobileBar,
+body.mode-play .hud, body.mode-play .panel, body.mode-play #mobileBar, body.mode-play #holdHud, body.mode-play #worldHud { display: none !important; }
+#title {
+  position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 20px;
+  background: radial-gradient(ellipse at 50% 35%, rgba(5, 8, 15, 0.1), rgba(5, 8, 15, 0.85) 75%);
+}
+.title-card { width: min(440px, 100%); text-align: center; display: flex; flex-direction: column; gap: 12px; }
+.title-logo { font-size: 44px; font-weight: 800; letter-spacing: 0.2em; color: var(--cyan); text-shadow: 0 0 24px var(--cyan-dim); }
+.title-logo span { color: var(--text); letter-spacing: 0.05em; }
+.title-sub { font-size: 19px; font-weight: 700; }
+.title-story { margin: 2px 0 6px; line-height: 1.6; font-size: 15px; background: var(--glass); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; backdrop-filter: blur(8px); }
+.title-btn { min-height: 62px; font-size: 20px; font-weight: 700; border-radius: 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: var(--glass); }
+.title-btn.primary { background: var(--cyan); }
+.title-btn small { font-size: 12px; font-weight: 400; opacity: 0.85; }
+.title-link { background: none; border: none; color: var(--muted); text-decoration: underline; min-height: 44px; font-size: 14px; }
+.title-save { font-size: 14px; color: #ffd166; }
+.title-note { font-size: 12px; color: var(--muted); line-height: 1.6; margin-top: 4px; }
+@media (max-width: 760px) {
+  #title { place-items: end center; padding: 16px 16px calc(18px + env(safe-area-inset-bottom)); }
+  .title-logo { font-size: 36px; }
+}
+
+/* ---------------- 冒險模式 ---------------- */
+#advHud { position: fixed; inset: 0; z-index: 6; pointer-events: none; }
+.adv-top { position: fixed; top: calc(8px + env(safe-area-inset-top)); left: 8px; right: 8px; display: flex; align-items: center; gap: 8px; pointer-events: none; }
+.adv-top > * { pointer-events: auto; }
+.adv-ico { width: 48px; height: 48px; font-size: 20px; padding: 0; border-radius: 12px; background: var(--glass); flex: 0 0 auto; }
+.adv-steps { flex: 1; min-width: 0; display: flex; gap: 2px; margin: 0; padding: 4px; list-style: none; background: var(--glass); border: 1px solid var(--line); border-radius: 12px; justify-content: space-around; backdrop-filter: blur(8px); }
+.adv-steps li { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); padding: 6px 6px; border-radius: 8px; white-space: nowrap; }
+.adv-steps li span { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--line); font-size: 12px; }
+.adv-steps li.on { color: #04121c; background: var(--cyan); font-weight: 700; }
+.adv-steps li.on span { border-color: #04121c; }
+.adv-steps li.done { color: var(--ok); }
+.adv-steps li.done span { background: var(--ok); color: #04121c; border-color: var(--ok); }
+.adv-timer { flex: 0 0 auto; background: var(--glass); border: 1px solid var(--line); border-radius: 12px; padding: 0 10px; height: 48px; display: grid; place-items: center; font-variant-numeric: tabular-nums; font-size: 14px; }
+.adv-goal {
+  position: fixed; top: calc(64px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); width: min(560px, calc(100vw - 16px));
+  background: rgba(6, 14, 26, 0.86); border: 1px solid var(--line); border-radius: 14px; padding: 9px 14px; text-align: center; backdrop-filter: blur(8px);
+}
+.adv-title { font-size: 13px; color: var(--cyan); font-weight: 700; letter-spacing: 0.05em; }
+.adv-text { font-size: 16px; line-height: 1.45; margin-top: 2px; }
+.adv-actions { position: fixed; left: 0; right: 0; bottom: calc(18px + env(safe-area-inset-bottom)); display: flex; justify-content: center; align-items: center; gap: 12px; padding: 0 12px; }
+.adv-actions button { pointer-events: auto; }
+.adv-main { min-height: 64px; min-width: 210px; font-size: 22px; font-weight: 700; border-radius: 18px; background: #ffd166; color: #1b1300; border-color: #ffd166; animation: advPulse 1.4s infinite; }
+.adv-main:hover:not(:disabled) { background: #ffe09a; }
+.adv-rescue { min-height: 52px; padding: 0 18px; font-size: 16px; border-radius: 14px; background: var(--glass); backdrop-filter: blur(8px); }
+.adv-rescue.alert { background: rgba(255, 209, 102, 0.28); border-color: #ffd166; animation: advPulse 1s infinite; }
+@keyframes advPulse { 50% { box-shadow: 0 0 0 10px rgba(255, 209, 102, 0.2); } }
+.adv-hand { position: fixed; left: 0; top: 0; z-index: 7; pointer-events: none; }
+.adv-hand .finger { width: 36px; height: 36px; margin: -18px 0 0 -18px; border-radius: 50%; border: 3px solid #fff; background: rgba(255, 255, 255, 0.22); box-shadow: 0 0 16px rgba(255, 255, 255, 0.65); transition: transform 0.15s, background 0.15s; }
+.adv-hand.press .finger { transform: scale(0.78); background: rgba(255, 255, 255, 0.6); }
+.adv-hand span { position: absolute; left: 24px; top: -12px; white-space: nowrap; font-size: 13px; background: rgba(0, 0, 0, 0.62); padding: 3px 8px; border-radius: 8px; }
+/* 開車時：最上面讓給操作列，目標往下挪；救援鍵放在右下 ⚡ 的上面 */
+body.mode-play.controlling .adv-top { display: none; }
+body.mode-play.controlling .adv-goal { top: calc(66px + env(safe-area-inset-top)); }
+body.mode-play.controlling .adv-actions { left: auto; right: calc(16px + env(safe-area-inset-right)); bottom: calc(140px + env(safe-area-inset-bottom)); padding: 0; }
+body.mode-play #ctlSwitch { display: none; }
+/* 卡片：開場、過關、結算、暫停 */
+.adv-card { text-align: center; max-height: calc(100vh - 32px); overflow-y: auto; }
+.adv-card-icon { font-size: 46px; line-height: 1.1; }
+.adv-card h2 { margin: 6px 0 10px; }
+.adv-lead { font-size: 16px; margin-bottom: 4px; line-height: 1.5; }
+.adv-plan { text-align: left; margin: 8px auto 10px; padding-left: 24px; max-width: 340px; line-height: 2; font-size: 16px; }
+.adv-small { font-size: 13px; color: var(--muted); margin: 8px 0; line-height: 1.5; }
+.adv-big { font-size: 28px; font-weight: 700; margin: 6px 0; font-variant-numeric: tabular-nums; }
+.adv-stars { color: #ffd166; letter-spacing: 0.1em; font-size: 40px; }
+.adv-stats { margin: 6px auto; border-collapse: collapse; font-size: 14px; }
+.adv-stats td { padding: 5px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+.adv-stats td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.adv-card-btns { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.adv-card-btns button { min-height: 48px; font-size: 17px; border-radius: 12px; }
+.adv-card-btns button.big { min-height: 58px; font-size: 19px; }
+body.mode-play .ctl-top button { min-height: 44px; min-width: 76px; font-size: 16px; }
+/* 冒險模式的提示訊息放在目標下面（下面是大按鈕和搖桿） */
+body.mode-play #toasts { top: calc(150px + env(safe-area-inset-top)); bottom: auto; left: 50%; right: auto; transform: translateX(-50%); align-items: center; width: min(520px, calc(100vw - 20px)); }
+body.mode-play.controlling #toasts { top: calc(150px + env(safe-area-inset-top)); }
+body.mode-play .toast { text-align: center; }

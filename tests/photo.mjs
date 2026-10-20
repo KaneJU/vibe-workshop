@@ -15,7 +15,7 @@ const PORT = 5314;
 const lanIp = Object.values(os.networkInterfaces())
   .flat()
   .find((n) => n && n.family === 'IPv4' && !n.internal)?.address;
-const BASE = `http://${lanIp}:${PORT}`;
+const BASE = process.env.LAN_BASE || `http://${lanIp}:${PORT}`; // LAN_BASE=http://127.0.0.1:5314 TEST_HOST=127.0.0.1：只聽本機
 const LOCAL = `http://127.0.0.1:${PORT}`;
 const DATA_DIR = mkdtempSync(path.join(os.tmpdir(), 'vw-photo-'));
 
@@ -38,7 +38,7 @@ function jpegSize(buf) {
 
 const server = spawn(process.execPath, ['server.mjs'], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), HOST: '0.0.0.0', DATA_DIR, CODEX_BIN: path.join(ROOT, 'tests', 'fake-codex.mjs') },
+  env: { ...process.env, PORT: String(PORT), HOST: process.env.TEST_HOST || '0.0.0.0', DATA_DIR, CODEX_BIN: path.join(ROOT, 'tests', 'fake-codex.mjs') },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let serverLog = '';
@@ -60,7 +60,7 @@ try {
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => m.type() === 'error' && errors.push(`console: ${m.text()}`));
   await page.addInitScript(() => localStorage.setItem('vw_help_seen', '1'));
-  await page.goto(`${BASE}/?key=${KEY}`);
+  await page.goto(`${BASE}/?ws&key=${KEY}`); // 自由工坊
   await page.waitForFunction(() => window.__ws?.loaded === true, null, { timeout: 30000 });
   check('iPhone 畫面上有 📷 按鈕', await page.isVisible('#photoBtn'));
 

@@ -117,7 +117,7 @@ async function dragTouch(from, to, { steps = 10, stepMs = 30, during, release = 
 const sizeOf = (name) => ws((name) => [...window.__ws.library].reverse().find((p) => p.name === name)?.size, name);
 
 // ---- 進場：新的工坊預設就開著物理 ----
-await page.goto(`${BASE}/?key=${KEY}`);
+await page.goto(`${BASE}/?ws&key=${KEY}`); // 自由工坊（首頁是冒險／工坊的入口）
 await page.waitForFunction(() => window.__ws?.loaded === true, null, { timeout: 30000 });
 const ready = await waitFor(() => window.__ws.physics.ready, null, 30000);
 const btn = await page.textContent('#physBtn');

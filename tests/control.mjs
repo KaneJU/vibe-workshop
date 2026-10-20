@@ -98,7 +98,7 @@ async function spawn(name) {
 }
 
 // ---- 進場 ----
-await page.goto(`${BASE}/?key=${KEY}`);
+await page.goto(`${BASE}/?ws&key=${KEY}`); // 自由工坊（首頁是冒險／工坊的入口）
 await page.waitForFunction(() => window.__ws?.loaded === true, null, { timeout: 30000 });
 
 // ---- 開車 ----
@@ -251,7 +251,7 @@ await page.close();
 const desk = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 desk.on('pageerror', (e) => errors.push(`desktop pageerror: ${e.message}`));
 await desk.addInitScript(() => localStorage.setItem('vw_help_seen', '1'));
-await desk.goto(BASE.replace(lanIp, 'localhost'));
+await desk.goto(`${BASE.replace(lanIp, 'localhost')}/?ws`);
 await desk.waitForFunction(() => window.__ws?.loaded === true, null, { timeout: 30000 });
 await desk.evaluate((id) => {
   window.__ws.selectOnly(id);

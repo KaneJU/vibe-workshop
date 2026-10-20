@@ -15,6 +15,8 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createSnapshotter } from './fabricator/snapshotter.mjs';
+import { createRooms, cleanGame, defaultGame, describeRule } from './rooms.mjs';
+import { findTool } from './public/tools.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 5310);
@@ -33,6 +35,8 @@ const SCENE_FILE = path.join(DATA_DIR, 'scene.json');
 const WORLD_DIR = path.join(DATA_DIR, 'world'); // 世界模組程式（環境、規則）
 const WORLDS_FILE = path.join(DATA_DIR, 'worlds.json');
 const WORLD_STATE_FILE = path.join(DATA_DIR, 'world-state.json');
+const ADVENTURE_FILE = path.join(DATA_DIR, 'adventure.json'); // 冒險模式的進度與場景（跟自由工坊的 scene.json 分開）
+const GAMES_FILE = path.join(DATA_DIR, 'games.json'); // 玩家自己做的遊戲（遊戲定義；跟自由工坊的場景、工具箱分開）
 const THUMBS_DIR = path.join(DATA_DIR, 'thumbs'); // 工具箱縮圖
 const MAX_CONCURRENT = 2;
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
@@ -172,6 +176,55 @@ const partById = (id) => library.parts.find((p) => p.id === id);
 const worlds = await readJson(WORLDS_FILE, { modules: [] });
 let worldState = await readJson(WORLD_STATE_FILE, { environment: null, rules: [], safeMode: false });
 const worldById = (id) => worlds.modules.find((m) => m.id === id);
+let adventure = await readJson(ADVENTURE_FILE, null);
+const games = await readJson(GAMES_FILE, { games: [] });
+if (!Array.isArray(games.games)) games.games = [];
+const gameById = (id) => games.games.find((g) => g.id === id);
+const hasTool = (id) => !!findTool(id, partById); // 零件（或組合零件裡的子零件）會不會射
+const toolParts = () => library.parts.filter((p) => !p.hidden && hasTool(p.id)).map((p) => ({ id: p.id, name: p.name, kind: p.kind, thumb: !!p.thumb, tool: findTool(p.id, partById).tool }));
+const rooms = createRooms({
+  log,
+  hasTool,
+  // 一回合結束：結算記在遊戲定義上（下次打開還看得到）
+  onEnded: (gameId, summary) => {
+    const g = gameById(gameId);
+    if (!g) return;
+    g.plays = (g.plays || 0) + 1;
+    g.last = summary;
+    writeJson(GAMES_FILE, games).catch((e) => log('games save error', e.message));
+  },
+});
+
+// 冒險進度只收認得的欄位（瀏覽器送什麼就存什麼的話，壞掉的存檔會讓下次打不開）
+const ADV_STEPS = new Set(['intro', 'play', 'built', 'test', 'drive', 'clear', 'done']);
+const ADV_SLOTS = new Set(['cube', 'board', 'w0', 'w1', 'w2', 'w3', 'st']);
+const INST_ID = /^i_[a-z0-9_]{4,40}$/;
+function cleanAdventureProgress(p) {
+  const num = (v, max, d = 0) => (Number.isFinite(v) ? Math.min(Math.max(v, 0), max) : d);
+  const int = (v, max, d = 0) => Math.round(num(v, max, d));
+  const stats = (s) =>
+    s && typeof s === 'object' ? { total: round3(num(s.total, 864000)), stars: int(s.stars, 3), rescues: int(s.rescues, 9999) } : null;
+  const ids = {};
+  for (const [k, v] of Object.entries(p?.ids && typeof p.ids === 'object' ? p.ids : {})) {
+    if (ADV_SLOTS.has(k) && typeof v === 'string' && INST_ID.test(v)) ids[k] = v;
+  }
+  return {
+    v: 1,
+    rev: int(p?.rev, 1e12),
+    level: [1, 2, 3, 4].includes(p?.level) ? p.level : 1,
+    step: ADV_STEPS.has(p?.step) ? p.step : 'play',
+    times: (Array.isArray(p?.times) ? p.times : []).slice(0, 3).map((t) => round3(num(t, 864000))),
+    rescues: int(p?.rescues, 9999),
+    cps: int(p?.cps, 9),
+    ids,
+    attached: [...new Set((Array.isArray(p?.attached) ? p.attached : []).filter((k) => ADV_SLOTS.has(k)))],
+    startedAt: int(p?.startedAt, 1e14),
+    finishedAt: int(p?.finishedAt, 1e14),
+    clears: int(p?.clears, 1e6),
+    best: stats(p?.best),
+    last: stats(p?.last),
+  };
+}
 
 // ---------------- 拍照（讓 Codex 看自己做的東西＋工具箱縮圖） ----------------
 
@@ -322,6 +375,8 @@ function buildContext(job) {
       description: p.description,
       size: p.size,
       ...(p.device ? { device: p.device } : {}),
+      ...(p.tool ? { tool: p.tool } : {}),
+      ...(p.target ? { target: p.target } : {}),
     })),
     base_part: job.mode === 'modify' ? 'base_part.js' : null,
     photo: job.hasPhoto ? 'reference.jpg' : null, // 使用者附的照片（也附在第一則訊息裡）
@@ -331,6 +386,7 @@ function buildContext(job) {
       runtime: path.join(PUBLIC_DIR, 'runtime.mjs'),
       worldhost: path.join(PUBLIC_DIR, 'worldhost.mjs'),
       physics: path.join(PUBLIC_DIR, 'physics.mjs'),
+      tools: path.join(PUBLIC_DIR, 'tools.mjs'),
       partsDir: PARTS_DIR,
       libraryFile: LIB_FILE,
     },
@@ -588,6 +644,8 @@ async function runJob(job) {
     wearSlot: report.meta.wearSlot || null,
     physics: report.meta.physics || null,
     device: report.meta.device || null,
+    tool: report.meta.tool || null,
+    target: report.meta.target || null,
     stats: report.stats,
     basedOn: job.basePartId || null,
     jobId: job.id,
@@ -730,6 +788,7 @@ function cleanTransform(c) {
 
 async function handleApi(req, res, url) {
   const p = url.pathname;
+  let m;
   if (req.method !== 'GET' && !(req.headers['content-type'] || '').startsWith('application/json')) {
     return send(res, 415, { error: '需要 application/json' });
   }
@@ -752,6 +811,98 @@ async function handleApi(req, res, url) {
     scene = { instances, ...(typeof physics === 'boolean' ? { physics } : {}), savedAt: new Date().toISOString() };
     await writeJson(SCENE_FILE, scene);
     return send(res, 200, { ok: true, count: instances.length });
+  }
+
+  // 冒險模式：進度＋冒險場景，存在 adventure.json；自由工坊的場景、工具箱、世界模組都不碰
+  if (req.method === 'GET' && p === '/api/adventure') {
+    return send(res, 200, { adventure });
+  }
+  if (req.method === 'PUT' && p === '/api/adventure') {
+    const body = await readBody(req);
+    if (!body || typeof body.progress !== 'object' || !Array.isArray(body.instances)) {
+      return send(res, 400, { error: '需要 progress 與 instances' });
+    }
+    const progress = cleanAdventureProgress(body.progress);
+    // 晚到的舊存檔（網路順序亂掉）不能蓋掉新的
+    if (adventure && progress.rev < (adventure.progress?.rev || 0)) return send(res, 200, { ok: true, stale: true });
+    const instances = [];
+    for (const it of body.instances.slice(0, 200)) {
+      if (!it || typeof it.id !== 'string' || !INST_ID.test(it.id) || !partById(it.partId)) continue;
+      if (!isVec(it.position, 3) || !isVec(it.quaternion, 4) || !isVec(it.scale, 3)) continue;
+      const glue = typeof it.glue === 'string' && /^g_[a-z0-9]{4,32}$/.test(it.glue) ? it.glue : null;
+      instances.push({ id: it.id, ...cleanTransform(it), ...(glue ? { glue } : {}) });
+    }
+    adventure = { progress, instances, savedAt: new Date().toISOString() };
+    await writeJson(ADVENTURE_FILE, adventure);
+    return send(res, 200, { ok: true, count: instances.length });
+  }
+
+  // ---- 遊戲房：玩家做的遊戲（宣告式設定，伺服器不執行玩家的程式）＋多人房間 ----
+  if (req.method === 'GET' && p === '/api/games') {
+    return send(res, 200, { games: games.games.filter((g) => !g.hidden), defaults: defaultGame(), tools: toolParts() });
+  }
+  if (req.method === 'POST' && p === '/api/games') {
+    const body = await readBody(req, 64 * 1024);
+    const clean = cleanGame(body.game, { hasTool });
+    let g = typeof body.id === 'string' ? gameById(body.id) : null;
+    if (g) Object.assign(g, clean, { updatedAt: new Date().toISOString() });
+    else {
+      g = { id: newId('g'), ...clean, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), plays: 0, last: null };
+      games.games.push(g);
+    }
+    await writeJson(GAMES_FILE, games);
+    return send(res, 200, { game: g, ruleText: describeRule(g) });
+  }
+  if (req.method === 'POST' && (m = p.match(/^\/api\/games\/(g_[a-z0-9]+)\/(copy|hide)$/))) {
+    const g = gameById(m[1]);
+    if (!g) return send(res, 404, { error: '找不到這個遊戲' });
+    if (m[2] === 'hide') {
+      g.hidden = true;
+      await writeJson(GAMES_FILE, games);
+      return send(res, 200, { ok: true });
+    }
+    const copy = { ...cleanGame(g, { hasTool }), id: newId('g'), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), plays: 0, last: null };
+    copy.name = `${g.name}（複本）`.slice(0, 20);
+    games.games.push(copy);
+    await writeJson(GAMES_FILE, games);
+    return send(res, 200, { game: copy });
+  }
+  if (req.method === 'GET' && p === '/api/rooms') {
+    return send(res, 200, { rooms: rooms.list() });
+  }
+  if (req.method === 'POST' && p === '/api/rooms') {
+    const body = await readBody(req, 16 * 1024);
+    const g = gameById(body.gameId);
+    if (!g) return send(res, 404, { error: '找不到這個遊戲' });
+    const room = rooms.create(g.id, cleanGame(g, { hasTool }));
+    return send(res, 200, { code: room.code });
+  }
+  if ((m = p.match(/^\/api\/rooms\/([A-Z]{4})\/(join|stream|act)$/))) {
+    const code = m[1];
+    if (m[2] === 'stream' && req.method === 'GET') {
+      if (!rooms.stream(code, url.searchParams.get('token') || '', req, res)) return send(res, 404, { error: '不在這個房間裡' });
+      return;
+    }
+    if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+    const body = await readBody(req, 16 * 1024);
+    try {
+      if (m[2] === 'join') {
+        const { room, player, rejoined } = rooms.join(code, { name: body.name, token: body.token });
+        return send(res, 200, { token: player.token, playerId: player.id, rejoined, state: rooms.state(room.code) });
+      }
+      const r = rooms.act(code, String(body.token || ''), body);
+      // 房主在房間裡改的規則也存回遊戲定義（下次打開就是新規則）
+      if (body.type === 'rules' && r.ok && r.game) {
+        const g = gameById(rooms.get(code)?.gameId);
+        if (g) {
+          Object.assign(g, r.game, { updatedAt: new Date().toISOString() });
+          await writeJson(GAMES_FILE, games);
+        }
+      }
+      return send(res, 200, r);
+    } catch (e) {
+      return send(res, e.status || 400, { error: e.message });
+    }
   }
 
   if (req.method === 'POST' && p === '/api/composite') {
@@ -833,7 +984,6 @@ async function handleApi(req, res, url) {
     return send(res, 200, { job: publicJob(job) });
   }
 
-  let m;
   if (req.method === 'GET' && (m = p.match(/^\/api\/thumbs\/([a-z]_[a-z0-9]+)$/))) {
     return send(res, 200, { ready: existsSync(path.join(THUMBS_DIR, `${m[1]}.jpg`)) }); // 剛存的組合零件問「縮圖好了沒」
   }

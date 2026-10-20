@@ -99,7 +99,7 @@ const card = (name) => page.locator('.wmod').filter({ has: page.locator('.n', { 
 const DEFAULT_BG = 0x05080f;
 
 // ---- 進場 ----
-await page.goto(`${BASE}/?key=${KEY}`);
+await page.goto(`${BASE}/?ws&key=${KEY}`); // 自由工坊（首頁是冒險／工坊的入口）
 await page.waitForFunction(() => window.__ws?.loaded === true, null, { timeout: 30000 });
 await openWorldTab();
 check('🧰 → 🌍 世界分頁列出示範模組', (await page.locator('.wmod').count()) === 3, `${await page.locator('.wmod').count()} 個`);

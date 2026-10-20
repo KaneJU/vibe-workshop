@@ -1,0 +1,7 @@
+{
+  "name": "標靶",
+  "description": "立在地上的圓形標靶，被能量彈打中會晃動、亮一圈綠光；在遊戲裡打中一次得 1 分。",
+  "placement": "front",
+  "physics": { "mass": 6, "friction": 0.9 },
+  "target": { "points": 1 }
+}

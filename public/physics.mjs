@@ -287,6 +287,8 @@ export function createPhysics({
   const byInst = new Map(); // inst.id -> rec
   const byCollider = new Map(); // collider handle -> rec
   const moduleOverrides = new Map(); // 世界模組 id -> { gravity, friction, bounce }
+  const pinned = new Set(); // 釘住的物件 id（冒險模式的組裝台）：連同黏著的整組先固定不動，裝零件時車身才不會被推走、倒下
+  const braked = new Set(); // 自動煞車的物件 id（冒險模式的車）：輪子沒出力時煞住
   let hold = null;
   let wasMoving = false;
   let lastMovingSave = 0;
@@ -373,7 +375,7 @@ export function createPhysics({
     const bodyInv = bodyMat.clone().invert();
     const g = globals();
     const single = list.length === 1;
-    const fixed = single && partPhys(anchor.partId).fixed === true;
+    const fixed = (single && partPhys(anchor.partId).fixed === true) || list.some((i) => pinned.has(i.id));
     const desc = (fixed ? R.RigidBodyDesc.fixed() : R.RigidBodyDesc.dynamic())
       .setTranslation(P.x, P.y, P.z)
       .setRotation({ x: Q.x, y: Q.y, z: Q.z, w: Q.w })
@@ -770,6 +772,10 @@ export function createPhysics({
         if (power > 0.02) {
           d.joint.configureMotorVelocity((factor * d.speed) / d.radius, 20);
           d.joint.setMotorMaxForce(d.force * d.radius);
+        } else if (braked.size && rec.members.some((m) => braked.has(m.inst.id))) {
+          // 自動煞車（冒險模式的車）：沒出力時輪子慢慢停下來，不會一路滑走
+          d.joint.configureMotorVelocity(0, 20);
+          d.joint.setMotorMaxForce(d.force * d.radius * 0.6);
         } else {
           d.joint.configureMotorVelocity(0, 0);
         }
@@ -1373,6 +1379,22 @@ export function createPhysics({
     },
     isRecalling(inst) {
       return !!byInst.get(inst.id)?.recall;
+    },
+    // 釘住／放開（冒險模式的組裝台）：釘住時整組是固定剛體，放開後照常受重力
+    pin(inst, on = true) {
+      if (on) pinned.add(inst.id);
+      else pinned.delete(inst.id);
+      const rec = byInst.get(inst.id);
+      if (!rec) return;
+      const want = rec.members.some((m) => pinned.has(m.inst.id)) || (rec.members.length === 1 && partPhys(rec.members[0].inst.partId).fixed === true);
+      if (want === rec.fixed) return;
+      rec.fixed = want;
+      if (!rec.held && !rec.recall && rec.mode !== 'controlled') setMode(rec, want ? 'fixed' : 'dynamic');
+      rec.body.wakeUp();
+    },
+    setBrake(inst, on = true) {
+      if (on) braked.add(inst.id);
+      else braked.delete(inst.id);
     },
     // 查詢
     bodyOf(inst) {

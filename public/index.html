@@ -20,7 +20,7 @@
     <div id="app"></div>
 
     <header class="hud top">
-      <div class="brand">VIBE <span>工坊</span></div>
+      <a class="brand" href="/" title="回首頁">VIBE <span>工坊</span></a>
       <div id="status" class="status">啟動中…</div>
       <div class="spacer"></div>
       <button id="vrBtn" class="ghost" hidden>進入 VR</button>
@@ -147,6 +147,50 @@
     <div id="worldHud" hidden></div>
     <div id="toasts"></div>
 
+    <!-- 首頁：開始／繼續冒險、自由工坊 -->
+    <div id="title" hidden>
+      <div class="title-card">
+        <div class="title-logo">VIBE <span>工坊</span></div>
+        <div class="title-sub">小紅的信號塔 · 三關小冒險</div>
+        <p class="title-story">🤖 工坊停電了！幫小機器人小紅點亮能量塔、組一台探險車，開到信號塔求救。</p>
+        <button id="titlePlay" class="title-btn primary">▶ 開始冒險</button>
+        <div id="titleSave" class="title-save" hidden></div>
+        <button id="titleRestart" class="title-link" hidden>↺ 從第 1 關重新開始</button>
+        <button id="titleFree" class="title-btn">🧰 自由工坊<small>說一句話，AI 幫你打造任何東西</small></button>
+        <div class="title-note">不用帳號、不用 VR 頭盔，手機或電腦都能玩，大約 5 分鐘。<br />冒險進度和自由工坊的作品分開保存，互不影響。</div>
+      </div>
+    </div>
+
+    <!-- 冒險模式：上面是進度和目標，下面是大按鈕 -->
+    <div id="advHud" hidden>
+      <div class="adv-top">
+        <button id="advMenu" class="adv-ico" title="暫停（Esc）">☰</button>
+        <ol class="adv-steps">
+          <li data-l="1"><span>1</span>能量塔</li>
+          <li data-l="2"><span>2</span>組車</li>
+          <li data-l="3"><span>3</span>信號塔</li>
+        </ol>
+        <div id="advTimer" class="adv-timer">⏱ 0:00</div>
+      </div>
+      <div id="advGoal" class="adv-goal">
+        <div id="advTitle" class="adv-title"></div>
+        <div id="advText" class="adv-text"></div>
+      </div>
+      <div class="adv-actions">
+        <button id="advRescue" class="adv-rescue" hidden>🔄 歸位</button>
+        <button id="advMain" class="adv-main" hidden>⚡ 啟動引擎</button>
+      </div>
+      <div id="advHand" class="adv-hand" hidden><div class="finger"></div><span>按住拖過去</span></div>
+    </div>
+    <div id="advCard" class="modal" hidden>
+      <div class="card adv-card">
+        <div id="advCardIcon" class="adv-card-icon"></div>
+        <h2 id="advCardTitle"></h2>
+        <div id="advCardBody"></div>
+        <div id="advCardBtns" class="adv-card-btns"></div>
+      </div>
+    </div>
+
     <div id="help" class="modal" hidden>
       <div class="card">
         <h2>操作說明</h2>
@@ -167,6 +211,7 @@
           <li><b>改世界：</b>說「把這裡變成月球表面」「加上重力」「車子開快一點而且會甩尾」，Codex 會做成環境或規則，當場套用不用重開；右側「🌍 世界」分頁可以開關、移除。出問題按「🛡️ 安全模式」全部停掉；網址加 <code>?safe=1</code> 打開時不載入任何世界模組</li>
           <li><b>操作：</b>選一個物件按「▶ 操作」：車子能開、飛天車能飛、手套能戴。手機用左下搖桿和右下 ⚡；電腦用 WASD、空白鍵（飛行時 E 升 Q 降），Esc 離開。也可以直接說「開車」「起飛」「戴上」「離開」</li>
           <li><b>直接說的指令：</b>「把這疊存成零件，叫砲台」「復原」「刪除」「拆開」「複製 3 個」（英文也行：save as part called turret / undo / delete / ungroup / duplicate 3）</li>
+          <li><b>冒險：</b>點左上角「VIBE 工坊」回首頁，可以玩三關小冒險（只用內建零件，不會動到這裡的作品）</li>
           <li><b>手機：</b>一指轉視角、兩指縮放平移；點物件選取、按住拖曳移動；上方那排按鈕有「多選」「存成零件」等；☰ 看打造進度、🧰 開工具箱；語音請用鍵盤上的 🎙 聽寫</li>
         </ul>
         <p class="muted">每次打造都會用到 Codex 額度。東西會自動存在這台電腦上，關掉再開都還在。</p>
