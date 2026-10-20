@@ -1,0 +1,7 @@
+{
+  "format": "vibe-pkg/1",
+  "name": "接星星",
+  "description": "協定測試用：方向鍵左右移動籃子接住掉下來的星星，點星星也能直接收。",
+  "stateSchema": 1,
+  "budgets": { "entities": 40 }
+}

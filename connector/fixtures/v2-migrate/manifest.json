@@ -1,0 +1,7 @@
+{
+  "format": "vibe-pkg/1",
+  "name": "接星星",
+  "description": "協定測試用（第 2 版）：加上連擊與最高分、籃子會隨連擊變寬；舊存檔用 migrate 轉過來。",
+  "stateSchema": 2,
+  "budgets": { "entities": 40 }
+}

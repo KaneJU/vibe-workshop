@@ -1,0 +1,7 @@
+{
+  "format": "vibe-pkg/1",
+  "name": "反應燈",
+  "description": "協定測試用（修好的版本）：燈變綠時按 action 或點燈得分，紅燈時按算按錯。",
+  "stateSchema": 1,
+  "budgets": { "entities": 20 }
+}

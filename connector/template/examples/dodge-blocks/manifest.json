@@ -1,0 +1,7 @@
+{
+  "format": "vibe-pkg/1",
+  "name": "躲方塊",
+  "description": "方向鍵（或點地板格子）移動小方塊人，躲開天上掉下來的方塊；看地上的影子，撐越久分數越高。",
+  "stateSchema": 1,
+  "budgets": { "entities": 100 }
+}

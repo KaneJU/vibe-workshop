@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { createSnapshotter } from './fabricator/snapshotter.mjs';
 import { createRooms, cleanGame, defaultGame, describeRule } from './rooms.mjs';
 import { findTool } from './public/tools.mjs';
+import { createCreation } from './server/creation.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 5310);
@@ -40,6 +41,7 @@ const WORLD_STATE_FILE = path.join(DATA_DIR, 'world-state.json');
 const ADVENTURE_FILE = path.join(DATA_DIR, 'adventure.json'); // 冒險模式的進度與場景（跟自由工坊的 scene.json 分開）
 const GAMES_FILE = path.join(DATA_DIR, 'games.json'); // 玩家自己做的遊戲（遊戲定義；跟自由工坊的場景、工具箱分開）
 const THUMBS_DIR = path.join(DATA_DIR, 'thumbs'); // 工具箱縮圖
+const creation = createCreation({ dataDir: DATA_DIR, log: (...a) => log(...a) }); // 創作世界（作品包、connector、世界嵌套）
 const MAX_CONCURRENT = 2;
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const BUSY_WAITS_MS = [30_000, 60_000]; // OpenAI 回「太忙」時，等多久再自動重跑（最多兩次）
@@ -750,6 +752,34 @@ async function serveFile(res, baseDir, rel, cache = 'no-cache', extra = {}) {
   }
 }
 
+// 作品沙盒頁：不同源（CSP sandbox，等同 iframe sandbox="allow-scripts"）、不能連網、沒有 eval／new Function；
+// 只准執行頁面裡那段 runner 程式（用雜湊放行）和它開的 blob Worker——玩家的作品程式只在那些 Worker 裡跑
+async function serveSandboxRunner(res) {
+  const html = await fs.readFile(path.join(PUBLIC_DIR, 'sandbox', 'runner.html'), 'utf8');
+  const hashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => `'sha256-${crypto.createHash('sha256').update(m[1]).digest('base64')}'`);
+  res.writeHead(200, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': [
+      'sandbox allow-scripts',
+      "default-src 'none'",
+      `script-src ${hashes.join(' ')} blob:`,
+      'worker-src blob:',
+      "connect-src 'none'",
+      "img-src 'none'",
+      "style-src 'none'",
+      "font-src 'none'",
+      "media-src 'none'",
+      "frame-src 'none'",
+      "object-src 'none'",
+      "base-uri 'none'",
+      "form-action 'none'",
+    ].join('; '),
+  });
+  res.end(html);
+}
+
 // 「照照片做」：只收 JPEG（瀏覽器已經縮小、重新編碼過），存檔前再拿掉 EXIF／XMP 這類附帶資訊（裡面可能有拍攝地點）
 function photoFromBody(image) {
   const m = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(String(image));
@@ -1078,8 +1108,13 @@ const server = http.createServer(async (req, res) => {
     if (!allowedHosts().has(String(req.headers.host || '').toLowerCase())) return send(res, 403, 'forbidden host');
     const url = new URL(req.url, `http://${req.headers.host}`);
     const remote = req.socket.remoteAddress || '';
+    // connector 用配對碼／token 認證（在創作者自己的電腦上跑，不帶瀏覽器的通行碼 cookie）
+    const connectorApi = /^\/api\/connector\/(pair|jobs)(\/|$)/.test(url.pathname);
     if (!isLoopback(remote)) {
       if (!isPrivate(remote)) return send(res, 403, 'forbidden');
+      if (connectorApi) {
+        /* 下面的 creation.handle 會驗配對碼或 token */
+      } else {
       const given = url.searchParams.get('key');
       if (given && safeEqual(given, ACCESS_KEY)) {
         url.searchParams.delete('key');
@@ -1093,8 +1128,13 @@ const server = http.createServer(async (req, res) => {
       if (!safeEqual(cookieValue(req, 'vw_key'), ACCESS_KEY)) {
         return send(res, 401, KEY_PAGE, { 'Content-Type': 'text/html; charset=utf-8' });
       }
+      }
     }
     const p = decodeURIComponent(url.pathname);
+    if (req.method !== 'GET' && req.method !== 'HEAD' && /^\/api\/(me|connector|create|lineages|cworlds)(\/|$)/.test(p) && !(req.headers['content-type'] || '').startsWith('application/json')) {
+      return send(res, 415, { error: '需要 application/json' });
+    }
+    if (/^\/(api\/(me|connector|create|lineages|cworlds)|pkg)(\/|$)/.test(p) && (await creation.handle(req, res, url, { send, readBody }))) return;
     if (p.startsWith('/api/')) return await handleApi(req, res, url);
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'method not allowed');
     if (p.startsWith('/vendor/three/')) return serveGzip(req, res, THREE_DIR, p.slice('/vendor/three/'.length), 'max-age=86400');
@@ -1104,6 +1144,8 @@ const server = http.createServer(async (req, res) => {
       return serveGzip(req, res, MEDIAPIPE_DIR, p.slice('/vendor/mediapipe/'.length), 'max-age=86400');
     }
     if (p === '/vendor/models/hand_landmarker.task') return serveFile(res, MODELS_DIR, 'hand_landmarker.task', 'max-age=86400');
+    // 創作世界的作品沙盒（見 docs/creation-sdk.md）
+    if (p === '/sandbox/runner.html') return serveSandboxRunner(res);
     // 手勢 worker：只准連回這台伺服器（就算辨識程式之後換版本，也不能把東西送到別的地方）
     if (p === '/handworker.mjs') return serveFile(res, PUBLIC_DIR, 'handworker.mjs', 'no-cache', { 'Content-Security-Policy': "connect-src 'self'" });
     const pm = p.match(/^\/parts\/([a-z]_[a-z0-9]+)\.js$/);

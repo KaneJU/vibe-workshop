@@ -1,0 +1,7 @@
+{
+  "format": "vibe-pkg/1",
+  "name": "顏色配對球",
+  "description": "上方的燈是目標顏色：點同色的球得分、連續答對有加分，點錯少一條命；60 秒一局。",
+  "stateSchema": 1,
+  "budgets": { "entities": 60 }
+}
