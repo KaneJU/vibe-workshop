@@ -224,6 +224,103 @@ const CAM = { width: 640, height: 480, hfovDeg: 64, rotation: 0, mirror: false }
   check('壞掉的設定字串 → 預設值', loadSettings({ getItem: () => '{oops' }).cam.hfovDeg === cleanCam().hfovDeg);
 }
 
+// ---------------- 鏡頭啟動的競態：每一條拿到的串流都要被接管或立刻關掉 ----------------
+// 假的 getUserMedia／worker：每條串流的 track 記下 stop 次數與 readyState（不是只看 tracker.state 或 video）
+function camEnv({ camDelays = [0], workerMode = 'ready', workerDelay = 0 } = {}) {
+  const streams = [];
+  let call = 0;
+  const mkStream = () => {
+    const track = { readyState: 'live', stops: 0, label: 'fake', stop() { this.stops += 1; this.readyState = 'ended'; }, getSettings: () => ({ width: 640, height: 480 }), addEventListener() {} };
+    const st = { n: streams.length, track, getTracks: () => [track], getVideoTracks: () => [track] };
+    streams.push(st);
+    return st;
+  };
+  const win = {
+    isSecureContext: true,
+    // 串流在「呼叫」時編號（n＝第幾次 getUserMedia），延遲之後才交出去
+    navigator: { mediaDevices: { getUserMedia: () => { const st = mkStream(); return new Promise((res) => setTimeout(() => res(st), camDelays[Math.min(call++, camDelays.length - 1)])); } } },
+  };
+  const doc = { createElement: () => ({ setAttribute() {}, style: {}, play: async () => {}, pause() {}, remove() {}, srcObject: null }), body: { appendChild() {} } };
+  const workers = [];
+  const makeWorker = () => {
+    const w = {
+      terminated: false,
+      postMessage(m) {
+        if (m.type !== 'init' || workerMode === 'hang') return;
+        setTimeout(() => !w.terminated && w.onmessage?.({ data: workerMode === 'ready' ? { type: 'ready', delegate: 'CPU' } : { type: 'error', stage: 'init', code: workerMode, message: workerMode } }), workerDelay);
+      },
+      terminate() {
+        w.terminated = true;
+      },
+    };
+    workers.push(w);
+    return w;
+  };
+  const tracker = createHandTracker({ win, doc, makeWorker });
+  // 不變量：除了「目前接管中」的那一條，其他每條都已經停掉（readyState ended）
+  const leaks = () => streams.filter((x) => x.track.readyState === 'live' && !(tracker.liveTracks() && tracker.state === 'running' && x === streams.find((y) => y.track.readyState === 'live'))).length;
+  return { tracker, streams, workers, leaks };
+}
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+{
+  for (const d of [0, 30]) {
+    const e = camEnv({ camDelays: [d], workerMode: 'model-missing' });
+    const ok = await e.tracker.start();
+    await wait(60);
+    check(`worker 先失敗（model-missing）、鏡頭 ${d} ms 後才拿到 → 那條串流被關掉`, !ok && e.tracker.error?.code === 'model-missing' && e.streams.length === 1 && e.streams[0].track.readyState === 'ended' && e.streams[0].track.stops === 1, `stops ${e.streams[0]?.track.stops} ${e.streams[0]?.track.readyState}`);
+  }
+  {
+    const e = camEnv({ camDelays: [0], workerMode: 'model-corrupt', workerDelay: 30 });
+    await e.tracker.start();
+    await wait(10);
+    check('鏡頭先拿到、worker 30 ms 後才失敗 → 還沒接管的串流被關掉', e.streams[0].track.readyState === 'ended' && e.tracker.error?.code === 'model-corrupt' && e.tracker.liveTracks() === 0);
+  }
+  {
+    const e = camEnv({ camDelays: [0], workerMode: 'hang' });
+    const p = e.tracker.start();
+    await wait(20);
+    const liveBefore = e.streams[0]?.track.readyState;
+    e.tracker.pause();
+    check('鏡頭已給、worker 還在啟動（沒回應）時暫停 → 拿到的那條立刻關掉', liveBefore === 'live' && e.streams[0].track.readyState === 'ended' && e.tracker.state === 'paused');
+    e.tracker.stop();
+    const settled = await Promise.race([p.then(() => true), wait(200).then(() => false)]);
+    check('worker 被關掉時，等它啟動的 start() 會結束（不會永遠卡著）', settled);
+  }
+  {
+    const e = camEnv({ camDelays: [50], workerMode: 'ready' });
+    const p = e.tracker.start();
+    await wait(10);
+    e.tracker.stop(); // 權限視窗還開著
+    await wait(80);
+    const settled = await Promise.race([p.then((v) => v === false), wait(200).then(() => false)]);
+    check('權限視窗還開著就停止（離開眼鏡模式）→ 之後才拿到的串流馬上關掉、不接管', e.streams.length === 1 && e.streams[0].track.readyState === 'ended' && e.tracker.state === 'off' && e.tracker.liveTracks() === 0 && settled);
+  }
+  {
+    const e = camEnv({ camDelays: [60, 10], workerMode: 'ready' });
+    e.tracker.start(); // 第一次：權限視窗開著（60 ms）
+    await wait(10);
+    e.tracker.pause(); // 切到背景
+    await wait(10);
+    const ok2 = await e.tracker.start(); // 回來重開：第二次 10 ms 就拿到
+    await wait(80); // 第一次那條這時才晚到
+    const [first, second] = e.streams.sort((x, y) => x.n - y.n);
+    check('重開後，舊的那次晚到：只關掉自己那條，不會關到新的串流', ok2 && e.streams.length === 2 && first.track.readyState === 'ended' && second.track.readyState === 'live' && second.track.stops === 0 && e.tracker.state === 'running' && e.tracker.liveTracks() === 1, `first ${first?.track.readyState} second ${second?.track.readyState}/${second?.track.stops}`);
+    e.tracker.stop();
+    check('停止 → 接管中的串流關掉；全部串流都是 ended', e.streams.every((x) => x.track.readyState === 'ended') && e.workers.every((w) => w.terminated));
+  }
+  {
+    const e = camEnv({ camDelays: [0, 0, 0], workerMode: 'ready' });
+    for (let i = 0; i < 3; i += 1) {
+      await e.tracker.start();
+      e.tracker.pause();
+    }
+    await e.tracker.start();
+    await wait(20);
+    check('反覆暫停／恢復 3 次：只剩目前這條是 live，其他都關了', e.streams.length === 4 && e.streams.filter((x) => x.track.readyState === 'live').length === 1 && e.tracker.liveTracks() === 1 && e.leaks() === 0);
+    e.tracker.stop();
+  }
+}
+
 // ---------------- 頭戴裡的說明文字 ----------------
 {
   const all = Object.values(HAND_ERRORS).map((m) => wrapLines(m));

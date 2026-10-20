@@ -61,6 +61,18 @@ async function openWorkshop(browser, base, ctxOpts = {}) {
   // MediaPipe 的 WASM 把 INFO 訊息寫到 console.error（例如「Created TensorFlow Lite XNNPACK delegate」），不算錯誤
   page.on('console', (m) => m.type() === 'error' && !/^INFO:|XNNPACK/.test(m.text()) && errors.push(`console: ${m.text()}`));
   await page.addInitScript(() => {
+    // 記下每一條 getUserMedia 交出來的串流：用真的 MediaStreamTrack.readyState 檢查有沒有被關掉（不只看 tracker 的狀態）
+    window.__gum = [];
+    const md = navigator.mediaDevices;
+    if (md?.getUserMedia) {
+      const orig = md.getUserMedia.bind(md);
+      md.getUserMedia = async (c) => {
+        const st = await orig(c);
+        window.__gum.push(st);
+        return st;
+      };
+    }
+    window.__trackStates = () => window.__gum.map((st) => st.getTracks().map((t) => t.readyState).join('+'));
     localStorage.setItem('vw_help_seen', '1');
     // 跟 iPhone Safari 一樣沒有元素全螢幕（不然 Chromium 會全螢幕＋鎖方向，模擬的螢幕角度跟著變）
     Element.prototype.requestFullscreen = undefined;
@@ -447,6 +459,8 @@ try {
     check('真模型：狀態機看到「找到手、上膛」', (st.stats.events.acquire || 0) > 0 && (st.stats.events.armed || 0) > 0, JSON.stringify(st.stats.events));
     await pb.screenshot({ path: path.join(OUT, 'b-01-real-hand.png') });
     check('真模型：全部連線只到本機伺服器（模型、WASM 不連外、不上傳）', [...reqs].every((o) => o === baseA), [...reqs].join(', '));
+    let ts = await pb.evaluate(() => window.__trackStates());
+    check('辨識中：getUserMedia 給的串流只有一條、而且是 live', ts.length === 1 && ts[0] === 'live', ts.join(','));
     // 切到背景：鏡頭停；回來只開一條
     const opened0 = st.tracker.streamsOpened;
     await pb.evaluate(() => {
@@ -455,18 +469,21 @@ try {
     });
     await pb.evaluate(() => window.__frames(5));
     st = await pb.evaluate(() => window.__ws.headset.state());
-    check('切到背景：鏡頭關掉（沒有 live track）、手勢暫停', st.tracker.state === 'paused' && st.liveTracks === 0);
+    ts = await pb.evaluate(() => window.__trackStates());
+    check('切到背景：鏡頭關掉（真的 track 都是 ended）、手勢暫停', st.tracker.state === 'paused' && st.liveTracks === 0 && ts.every((x) => x === 'ended'), ts.join(','));
     await pb.evaluate(() => {
       Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
       document.dispatchEvent(new Event('visibilitychange'));
     });
     await pb.waitForFunction(() => window.__ws.headset.state().tracker.state === 'running');
     st = await pb.evaluate(() => window.__ws.headset.state());
-    check('回到前景：恢復辨識，只多開一條串流', st.liveTracks === 1 && st.tracker.streamsOpened === opened0 + 1, `streams ${opened0}→${st.tracker.streamsOpened}`);
+    ts = await pb.evaluate(() => window.__trackStates());
+    check('回到前景：恢復辨識，只多開一條串流（舊的 ended、新的 live）', st.liveTracks === 1 && st.tracker.streamsOpened === opened0 + 1 && ts.length === 2 && ts[0] === 'ended' && ts[1] === 'live', `streams ${opened0}→${st.tracker.streamsOpened} tracks ${ts.join(',')}`);
     await pb.keyboard.press('Escape');
     await pb.waitForFunction(() => !window.__ws.headset.active);
     st = await pb.evaluate(() => window.__ws.headset.state());
-    check('離開：鏡頭 track 全部停止、video 移除、worker 關閉', st.liveTracks === 0 && !st.video && st.tracker.state === 'off' && !(await pb.evaluate(() => !!document.getElementById('handCam'))));
+    ts = await pb.evaluate(() => window.__trackStates());
+    check('離開：getUserMedia 給過的每一條 track 都 ended、video 移除、worker 關閉', st.liveTracks === 0 && !st.video && st.tracker.state === 'off' && ts.length >= 2 && ts.every((x) => x === 'ended') && !(await pb.evaluate(() => !!document.getElementById('handCam'))), ts.join(','));
     check('B 段沒有頁面錯誤', B.errors.length === 0, B.errors.slice(0, 3).join(' | '));
     await B.ctx.close();
 
@@ -479,7 +496,9 @@ try {
     await C.page.locator('#hsGo').tap();
     await C.page.waitForFunction(() => window.__ws.headset.state().tracker.state === 'error', null, { timeout: 30000 });
     st = await C.page.evaluate(() => window.__ws.headset.state());
-    check('模型檔不在伺服器 → 錯誤 model-missing、鏡頭已關', st.tracker.error === 'model-missing' && st.liveTracks === 0, st.tracker.error);
+    await sleep(1500); // 等可能晚到的 getUserMedia
+    const tsC = await C.page.evaluate(() => window.__trackStates());
+    check('模型檔不在伺服器 → 錯誤 model-missing；鏡頭真的有開過、拿到的 track 全部 ended（沒有洩漏）', st.tracker.error === 'model-missing' && st.liveTracks === 0 && tsC.length >= 1 && tsC.every((x) => x === 'ended'), `${st.tracker.error} tracks ${tsC.join(',')}`);
     await C.page.evaluate(() => window.__frames(10));
     await C.page.screenshot({ path: path.join(OUT, 'c-01-model-missing.png') });
     await C.page.keyboard.press('Escape');

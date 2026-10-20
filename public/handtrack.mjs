@@ -47,6 +47,8 @@ export function createHandTracker({
   let video = null;
   let worker = null;
   let workerReady = null; // Promise
+  let rejectWorker = null; // worker 被關掉時，讓還在等它啟動的人收到失敗（不然會永遠等下去）
+  let attempt = null; // 正在進行的那一次「開」：{ gen, held（拿到但還沒接管的串流）, abandoned }
   let delegateUsed = null;
   let inflight = null;
   let lastSend = -Infinity;
@@ -88,8 +90,21 @@ export function createHandTracker({
     return video;
   }
 
+  const stopTracks = (s) => {
+    for (const t of s?.getTracks?.() || []) t.stop();
+  };
+
+  // 放棄正在進行的那一次「開」：已經拿到、還沒接管的串流立刻關掉；之後才拿到的也會直接關
+  function abandon(a) {
+    if (!a) return;
+    a.abandoned = true;
+    stopTracks(a.held);
+    a.held = null;
+    if (attempt === a) attempt = null;
+  }
+
   function stopStream() {
-    if (stream) for (const t of stream.getTracks()) t.stop();
+    stopTracks(stream);
     stream = null;
     if (video) {
       video.pause?.();
@@ -100,6 +115,7 @@ export function createHandTracker({
   function startWorker() {
     if (workerReady) return workerReady;
     workerReady = new Promise((resolve, reject) => {
+      rejectWorker = reject;
       let w;
       try {
         w = makeWorker();
@@ -114,6 +130,7 @@ export function createHandTracker({
         if (m.type === 'ready') {
           delegateUsed = m.delegate;
           stats.initMs = Math.round(now() - t0);
+          rejectWorker = null;
           resolve();
         } else if (m.type === 'error' && m.stage === 'init') reject(Object.assign(new Error(m.message), { code: m.code || 'runtime-init' }));
         else onWorkerMessage(m);
@@ -136,6 +153,8 @@ export function createHandTracker({
       }
       worker.terminate();
     }
+    rejectWorker?.(Object.assign(new Error('stopped'), { code: 'stopped' }));
+    rejectWorker = null;
     worker = null;
     workerReady = null;
     inflight = null;
@@ -156,25 +175,36 @@ export function createHandTracker({
     }
   }
 
-  // 開鏡頭＋worker（同時進行）。重複呼叫會等同一次，不會開兩條串流
+  // 開鏡頭＋worker（同時進行）。重複呼叫會等同一次，不會開兩條串流。
+  // 拿到的每一條串流都一定有人負責：接管成目前的 stream，否則立刻關掉——
+  // worker 先失敗、鏡頭先成功但 worker 後失敗、權限視窗還開著就被暫停／停止、重開後舊的那次才拿到，都一樣。
+  // 每一次「開」有自己的 attempt：舊的晚到只會關掉自己拿到的那條，不會碰到新的串流
   function start(next = {}) {
     opts = { ...opts, ...next };
     if (state === 'running') return Promise.resolve(true);
     if (starting) return starting;
     const myGen = ++gen;
+    const a = { gen: myGen, held: null, abandoned: false };
+    attempt = a;
     setState('starting');
+    const cam = openCamera().then((s) => {
+      if (a.abandoned || myGen !== gen) stopTracks(s); // 已經放棄了：晚到的直接關
+      else a.held = s;
+      return s;
+    });
     starting = (async () => {
       try {
-        const [s] = await Promise.all([openCamera(), startWorker()]);
-        if (myGen !== gen) {
-          for (const t of s.getTracks()) t.stop(); // 開到一半被關掉了
-          return false;
-        }
+        await Promise.all([cam, startWorker()]);
+        if (myGen !== gen || a.abandoned) throw Object.assign(new Error('cancelled'), { code: 'cancelled' });
+        const s = a.held;
+        a.held = null; // 接管
+        if (attempt === a) attempt = null;
         stream = s;
         stats.streamsOpened += 1;
         const v = ensureVideo();
         v.srcObject = s;
         await v.play().catch(() => {});
+        if (myGen !== gen) return false; // 播放途中被暫停／停止：那時 stopStream 已經關了這條
         const track = s.getVideoTracks()[0];
         const st = track?.getSettings?.() || {};
         stats.camera = { label: track?.label || '', facingMode: st.facingMode || null, width: st.width || v.videoWidth, height: st.height || v.videoHeight, deviceId: st.deviceId || null };
@@ -188,6 +218,7 @@ export function createHandTracker({
         setState('running');
         return true;
       } catch (e) {
+        abandon(a); // 鏡頭先成功、另一邊失敗（或被取消）：還沒接管的那條關掉；之後才到的也會被關
         if (myGen !== gen) return false;
         stopStream();
         const code = e.code || 'camera-failed';
@@ -207,6 +238,7 @@ export function createHandTracker({
     gen += 1;
     starting = null;
     inflight = null;
+    abandon(attempt); // 權限視窗還開著、或 worker 還在啟動：拿到的那條也要關
     stopStream();
     setState('paused');
   }
@@ -214,6 +246,7 @@ export function createHandTracker({
   function stop() {
     gen += 1;
     starting = null;
+    abandon(attempt);
     stopStream();
     killWorker();
     if (video) {
