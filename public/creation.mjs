@@ -448,7 +448,9 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
       setJobText(`完成：「${name}」v${j.version}（你的 Codex，${j.attempts} 輪）${J.context.worldId === world.id ? '——已經放在你面前' : ''}`);
     } else if (J.context.worldId === world.id) {
       setJobText(`「${name}」v${j.version} 做好了：先試跑再換上…`);
-      await swapLineage(j.lineage, j.version, J);
+      const r = await swapLineage(j.lineage, j.version, J);
+      if (r?.ok && r.swapped) setJobText(`已換上「${name}」v${j.version}（狀態保留；3 秒內出錯會自動退回）`);
+      else if (r?.ok) setJobText(`「${name}」v${j.version} 做好了（這一層沒有舊版要換）`);
     } else {
       addPending(J.context.worldId, j.lineage, j.version, j.id);
       setJobText(`「${name}」v${j.version} 做好了：回到原本那一層才會換上（說話時你在那一層）`);
