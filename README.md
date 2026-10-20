@@ -74,6 +74,7 @@ With physics on, every part is a rigid body. A part can declare `physics` (mass,
 git clone https://github.com/KaneJU/vibe-workshop.git
 cd vibe-workshop
 npm install
+npm run fetch:models   # optional: hand-tracking model for phone headset mode (7.8 MB, SHA-256 checked; not in git)
 npm start
 ```
 
@@ -189,6 +190,15 @@ Easter egg: wear something named "Infinity Gauntlet" (無限手套) and press �
 
 Requests from the computer itself never need the key. Requests from other devices need it, and anything that isn't a private network address is rejected.
 
+## Phone headset mode (cardboard viewer)
+
+"👓 眼鏡" in the free workshop's top bar: slide the phone sideways into a Cardboard-style viewer, sit, turn your head to look at your creations, and hold your hand in front of the phone's rear camera — open your hand, point, pinch thumb and index to grab, open your fingers to let go. It's the same world and the same physics as the workshop, and moved things are saved as usual.
+
+- Each eye has its own viewpoint and off-axis projection (not one picture shown twice); the world and physics still update once per frame. Lens distortion, IPD, lens spacing, camera field of view and hand distance scale are adjustable, with a calibration chart. No phone or lens model is specified yet, so the defaults are marked "uncalibrated".
+- Hand tracking uses [MediaPipe Hand Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker) (`@mediapipe/tasks-vision` pinned to 0.10.35 — 1.x sends usage metrics to Google). Frames are processed on the phone only: code, WASM and model come from the workshop's own server, the worker may only connect back to it, nothing is uploaded or stored.
+- You can't reach the screen while wearing it: look down at "⟳ 回正 / ▦ 校正圖 / ✕ 離開" for 1.5 s to press, or hold a finger on the screen for 1.2 s to leave. Losing the hand, stopping the camera, backgrounding the page, turning the phone upright or leaving all put a held object down in place (no throw), and you must open your hand again before the next grab.
+- iPhones only give camera and motion sensors to secure pages (https, or the computer itself); over LAN http you can only drag to look around, and the reason is shown. It's seated head rotation (3DoF), not positional tracking, and hand distance is a single-camera estimate.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -236,6 +246,8 @@ npm run test:physics     # iPhone: fall and stack, Ultrahand, glue, shake off, f
 npm run test:xr          # VR on an emulated Quest 3 (IWER): controller grab, follow, wrist turn, release, hand pinch — physics on and off
 npm run test:photo       # 📷 from an iPhone on the LAN: shrunk, location data removed, attached to Codex (starts its own server with a fake Codex)
 npm run test:examples    # every example in fabricator/examples passes the real validator (no server needed)
+npm run test:headset     # headset mode: stereo and head turning, gesture state machine (synthetic), fake camera + real model inference, safe drop on tracking loss, save and reopen (starts its own 127.0.0.1 server)
+npm run test:flash       # how big muzzle/impact flashes get on screen (no server; tests/flash-probe.mjs measures inside a real game room)
 
 # Tutorial and game rooms: run each against its own throwaway data folder on 127.0.0.1 (CODEX_BIN points nowhere on purpose)
 DATA_DIR=/tmp/vw-adv-data PORT=5312 HOST=127.0.0.1 CODEX_BIN=/nonexistent/codex npm start &
@@ -274,6 +286,15 @@ public/control.mjs      operation engine: drive, fly, wear (joystick, buttons, k
 public/worldhost.mjs    world-module host shared by the browser and the validator (isolation, cleanup, watchdog)
 public/worlds.mjs       the 🌍 world tab: enable / disable, rollback, safe mode
 public/physics.mjs      physics shared by the browser and the validator: Rapier bodies, Ultrahand, glue, devices, Recall
+public/headset.mjs      phone headset mode: wires stereo, head pose and rear-camera hands into the same world and physics
+public/stereo.mjs       stereo rendering (per-eye off-axis projection, lens distortion, calibration chart)
+public/headpose.mjs     phone orientation sensor → head pose (landscape, recenter, drag fallback)
+public/handtrack.mjs    rear camera + hand worker lifecycle (rate limit, stale results dropped, camera off when paused)
+public/handworker.mjs   runs MediaPipe in a worker (no outside connections)
+public/hands.mjs        21 landmarks → pinch, position, distance; grab state machine (hysteresis, debounce, arming, loss)
+public/headsethud.mjs   in-headset UI: status panels, gaze buttons, hand skeleton and ray
+public/legal.html       license and third-party notices
+scripts/fetch-models.mjs  downloads and verifies the hand model
 public/index.html       page and help text
 examples/starter/       demo parts and scene loaded on first start
 launchd/                macOS background-service template and installer
@@ -296,7 +317,8 @@ tests/                  Playwright tests (desktop and phone)
 - Rooms live in the server's memory: restarting the server closes open rooms (the games themselves are saved).
 - One game type so far (target shooting with a blaster); the editor sets its tool, targets and win rule. Hits are decided by the shooter's device and checked for plausibility by the server — fine among friends, not cheat-proof.
 - The tutorial and game rooms are not available inside VR yet.
+- Phone headset mode is workshop-only and hasn't been tried on a real iPhone or real cardboard lenses yet (optical fusion, comfort and heat are unverified); automated tests feed test pictures through Chromium's fake camera, not an iPhone rear camera. iPhones need https for camera and motion sensors, which the current LAN http entry doesn't provide.
 
 ## License
 
-[MIT](LICENSE). Built with [three.js](https://threejs.org/), [Rapier](https://rapier.rs/) and the [OpenAI Codex CLI](https://github.com/openai/codex).
+[MIT](LICENSE). Built with [three.js](https://threejs.org/), [Rapier](https://rapier.rs/), [MediaPipe](https://ai.google.dev/edge/mediapipe) and the [OpenAI Codex CLI](https://github.com/openai/codex). Third-party versions, licenses and notices are listed in the in-app "授權與第三方聲明" page (`/legal.html`).

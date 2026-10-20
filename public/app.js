@@ -12,6 +12,7 @@ import { createGame } from './game.mjs';
 import { createArena } from './arena.mjs';
 import { createSfx } from './sfx.mjs';
 import { createQuality } from './quality.mjs';
+import { createHeadset } from './headset.mjs';
 
 const $ = (sel) => document.querySelector(sel);
 // 四種畫面：首頁（/）、新手教學（/?play）、遊戲房（/?games、/?edit=、/?room=）、自由工坊（/?ws；舊網址帶 physics、safe 參數的也直接進工坊）
@@ -599,7 +600,7 @@ let drag = null;
 renderer.domElement.addEventListener(
   'pointerdown',
   (e) => {
-    if (e.button !== 0 || renderer.xr.isPresenting || engine.active) return;
+    if (e.button !== 0 || renderer.xr.isPresenting || engine.active || headset.active) return;
     closeDrawers();
     setPointer(e);
     raycaster.setFromCamera(pointer, camera);
@@ -1767,6 +1768,64 @@ for (let i = 0; i < 2; i += 1) {
   rig.add(grip);
 }
 
+// ---------------- 手機眼鏡模式（紙盒：雙眼＋轉頭＋後鏡頭手勢） ----------------
+// 同一個世界、同一套物理：捏住抓的是工坊裡既有的作品，放下照常存檔。物理關著的話，眼鏡模式期間暫時打開（不寫進存檔）
+let headsetPhysics = false;
+let headsetPhysicsTimer = null;
+const headset = createHeadset({
+  THREE,
+  renderer,
+  scene,
+  camera,
+  controls,
+  phys,
+  pick(origin, dir) {
+    raycaster.ray.origin.copy(origin);
+    raycaster.ray.direction.copy(dir);
+    raycaster.camera = camera;
+    return pickFromRaycaster();
+  },
+  hooks: {
+    toast: (m) => toast(m),
+    canEnter() {
+      if (MODE !== 'workshop') return '眼鏡模式目前只在自由工坊';
+      if (engine.active) return '先離開操作模式（開車／飛行／穿戴）再戴眼鏡';
+      if (renderer.xr.isPresenting) return 'VR 裡不能開眼鏡模式';
+      return true;
+    },
+    onEnter() {
+      closeDrawers();
+      if (drag) endPointer({ clientX: 0, clientY: 0 });
+      clearTimeout(headsetPhysicsTimer);
+      if (!physicsOn) {
+        headsetPhysics = true;
+        setPhysics(true, { persist: false, quiet: true, wake: false });
+      }
+    },
+    onExit() {
+      fitCamera();
+      controls.update();
+      scheduleSave();
+      // 剛放下的東西還在掉：等它落定再關回物理（位置留在落定的地方）
+      if (headsetPhysics) {
+        headsetPhysicsTimer = setTimeout(() => {
+          headsetPhysics = false;
+          if (!headset.active) setPhysics(false, { persist: false, quiet: true }).then(() => scheduleSave());
+        }, 1500);
+      }
+    },
+    beforeGrab(inst) {
+      pushUndo();
+      selectOnly(inst.id);
+    },
+    afterRelease: () => scheduleSave(),
+    nameOf: (inst) => partName(inst.partId),
+  },
+});
+const hsBtn = $('#hsBtn');
+if (MODE === 'workshop') hsBtn.hidden = false;
+hsBtn.onclick = () => headset.open();
+
 // ---------------- 操作模式（開車／飛行／穿戴） ----------------
 
 let controlTarget = null; // 等使用者在選單選模式的物件
@@ -1941,6 +2000,7 @@ window.addEventListener('keyup', (e) => {
 // ---------------- 介面事件 ----------------
 
 window.addEventListener('keydown', (e) => {
+  if (headset.active) return; // 眼鏡模式：Esc 由 headset 自己接（離開），其他快捷鍵不作用
   if (engine.active) {
     controlKey(e, true);
     return;
@@ -2142,6 +2202,7 @@ renderer.setAnimationLoop(() => {
   }
   tools.update(dt); // 道具（能量槍）：要在 engine.update 之前，才讀得到這一格按下的 ⚡
   engine.update(dt);
+  headset.update(dt); // 眼鏡模式：頭 → 鏡頭、手 → 抓放（在物理之前；世界、物理照樣每格只更新一次）
   adventure?.update(dt, t); // 在物理之前：吸附、救援搬動的東西這一格就讓物理跟過去
   game?.update(dt, t);
   if (titleScene) {
@@ -2167,8 +2228,9 @@ renderer.setAnimationLoop(() => {
   for (const h of selHelpers.values()) h.update();
   animateHolograms(t);
   pad.material.opacity = 0.4 + 0.15 * Math.sin(t * 1.5);
-  if (!renderer.xr.isPresenting && !engine.ownsCamera) controls.update();
-  renderer.render(scene, camera);
+  if (!renderer.xr.isPresenting && !engine.ownsCamera && !headset.active) controls.update();
+  if (headset.active) headset.render(); // 左右眼各畫一次（同一格的世界）
+  else renderer.render(scene, camera);
 });
 
 // ---------------- 啟動 ----------------
@@ -2390,6 +2452,7 @@ window.__ws = {
   get holding() {
     return phys.holding;
   },
+  headset,
   mode: MODE,
   // 冒險模式的狀態（只讀；自動測試用來找東西在哪，不提供跳關）
   get adventure() {

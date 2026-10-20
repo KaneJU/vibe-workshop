@@ -1022,6 +1022,7 @@ export function createPhysics({
   // ---- 特效（究極手的綠光、黏合預覽、倒轉路徑） ----
 
   const fx = { aura: [], beam: null, glue: null, glueDot: null };
+  let beamOrigin = null; // (v) => 改寫光束起點；null＝鏡頭右下方
   const auraMat = () => {
     const m = new THREE.LineBasicMaterial({ color: 0x9dff5c, transparent: true, opacity: 0.95, depthTest: false });
     return m;
@@ -1061,6 +1062,7 @@ export function createPhysics({
       const dir = camera.getWorldDirection(new THREE.Vector3());
       const right = new THREE.Vector3().crossVectors(dir, UP).normalize();
       hand.addScaledVector(dir, 0.6).addScaledVector(UP, -0.35).addScaledVector(right, 0.22);
+      beamOrigin?.(hand); // 眼鏡模式：光束從畫面上那隻手（捏的位置）出發
       const pos = fx.beam.geometry.attributes.position;
       pos.setXYZ(0, hand.x, hand.y, hand.z);
       const c = groupBox(hold.rec).getCenter(new THREE.Vector3());
@@ -1234,7 +1236,9 @@ export function createPhysics({
     stepMs = stepMs * 0.9 + ms * 0.1;
   }
 
-  function release() {
+  // fling: false＝安全放下（手勢追丟、關鏡頭、切到背景、離開眼鏡模式）：不管最後手怎麼動，原地停住再交給重力；
+  // minThrow：手勢辨識的手會抖，眼鏡模式放手時要甩得比觸控明顯才算丟
+  function release({ fling = true, minThrow = 0.6 } = {}) {
     const h = hold;
     hold = null;
     clearHoldFx();
@@ -1247,13 +1251,18 @@ export function createPhysics({
       for (const m of rec.members) m.last = capture(m.inst);
       return;
     }
+    if (!fling) {
+      rec.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      rec.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      return;
+    }
     // 放手：用最後 0.1 秒手的速度丟出去
     const a = h.samples[0];
     const b = h.samples[h.samples.length - 1];
     const span = b.t - a.t;
     const v = span > 0.02 ? b.p.clone().sub(a.p).multiplyScalar(1 / span) : new THREE.Vector3();
     if (v.length() > PHYS.throwMax) v.setLength(PHYS.throwMax);
-    if (v.length() < 0.6) v.set(0, 0, 0);
+    if (v.length() < minThrow) v.set(0, 0, 0);
     rec.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true);
     const w = rec.body.angvel();
     rec.body.setAngvel({ x: w.x * 0.3, y: w.y * 0.3, z: w.z * 0.3 }, true);
@@ -1330,6 +1339,9 @@ export function createPhysics({
       if (hold) hold.targetQ.copy(q);
     },
     release,
+    setBeamOrigin(fn) {
+      beamOrigin = typeof fn === 'function' ? fn : null;
+    },
     get holding() {
       return hold && !hold.stale ? { inst: hold.inst, members: hold.rec.members.map((m) => m.inst), finger: hold.finger.clone() } : null;
     },

@@ -74,6 +74,7 @@ for (let i = 0; i < 8; i++) {
 git clone https://github.com/KaneJU/vibe-workshop.git
 cd vibe-workshop
 npm install
+npm run fetch:models   # 選用：手機眼鏡模式的手勢模型（7.8 MB，下載後核對 SHA-256；不放進 git）
 npm start
 ```
 
@@ -187,6 +188,15 @@ npm start
 
 在電腦本機開不需要通行碼。其他裝置都要通行碼，而且不是私人網段的位址一律擋掉。
 
+## 手機眼鏡模式（紙盒頭戴）
+
+自由工坊右上角的「👓 眼鏡」：把手機橫放進紙盒眼鏡（Cardboard 一類），坐著轉頭看自己的作品，手伸到手機背面的鏡頭前——張開手、指向東西、拇指捏食指就抓起來，張開手指放下。抓的是工坊裡同一批作品、同一套物理，放下後照常存檔。
+
+- 左右眼各有自己的視點與偏軸投影（不是同一張畫面複製兩次），世界與物理每格只更新一次；鏡片畸變、瞳距、鏡片中心距、鏡頭視角、手的遠近比例都能在設定面板調，並有校正圖。手機型號與鏡片還沒指定，預設值標示「未校正」。
+- 手勢辨識用 [MediaPipe Hand Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker)（`@mediapipe/tasks-vision` 鎖在 0.10.35：1.x 版內建會把使用量指標送到 Google）。影像只在手機上推論：程式、WASM、模型都由工坊自己的伺服器提供，worker 只准連回本機伺服器，不上傳、不存檔。
+- 戴著摸不到螢幕按鈕：低頭盯著「⟳ 回正／▦ 校正圖／✕ 離開」1.5 秒就會按下；按住螢幕 1.2 秒也會離開。追丟手、關鏡頭、切到背景、手機轉直、離開時，手上的東西一律原地放下（不會被甩出去），之後要先張開手才抓得起來。
+- iPhone 只在安全連線（https 或這台電腦本機）給鏡頭和動作感測；用區網的 http 連時只能拖曳畫面看，畫面上會寫原因。這是坐著轉頭（3DoF），不是空間定位；手的遠近是單眼估計。
+
 ## 設定
 
 | 環境變數 | 預設 | 說明 |
@@ -234,6 +244,8 @@ npm run test:physics     # iPhone：掉落與疊放、究極手、黏合、搖�
 npm run test:xr          # 模擬 Quest 3（IWER）進 VR：手把抓、跟著走、轉手腕、放開、手勢捏——物理開關各一輪
 npm run test:photo       # iPhone 從區網按 📷：照片縮小、拿掉拍攝地點、叫 Codex 時附上（自己開一台用假 Codex 的伺服器）
 npm run test:examples    # fabricator/examples 裡每個範例都要通過真的驗收（不用開伺服器）
+npm run test:headset     # 眼鏡模式：雙眼與轉頭、手勢狀態機（合成）、假鏡頭＋真模型推論、追丟安全放下、存檔重開（自己開 127.0.0.1 的伺服器）
+npm run test:flash       # 開火閃光在畫面上的大小（不用開伺服器；tests/flash-probe.mjs 在真的遊戲房裡量）
 
 # 新手教學與遊戲房：各用一個丟棄式資料夾、只聽 127.0.0.1（CODEX_BIN 故意指到不存在的地方）
 DATA_DIR=/tmp/vw-adv-data PORT=5312 HOST=127.0.0.1 CODEX_BIN=/nonexistent/codex npm start &
@@ -272,6 +284,15 @@ public/control.mjs      操作引擎：開車、飛行、穿戴（搖桿、按�
 public/worldhost.mjs    世界模組宿主，瀏覽器和驗收共用（隔離、清理、效能看門狗）
 public/worlds.mjs       「🌍 世界」分頁：開關、退回上一版、安全模式
 public/physics.mjs      瀏覽器和驗收共用的物理：Rapier 剛體、究極手、黏合、裝置、時光倒轉
+public/headset.mjs      手機眼鏡模式：把雙眼畫面、轉頭、後鏡頭手勢接到同一個世界與物理
+public/stereo.mjs       雙眼畫面（每眼偏軸投影、鏡片畸變校正、校正圖）
+public/headpose.mjs     手機方向感測 → 頭部姿勢（橫放、回正、沒有感測時拖曳）
+public/handtrack.mjs    後鏡頭與手勢 worker 的生命週期（限頻、丟掉過期結果、暫停時關鏡頭）
+public/handworker.mjs   在 worker 裡跑 MediaPipe（不連外）
+public/hands.mjs        21 個關鍵點 → 捏合、位置、遠近；抓放狀態機（遲滯、防抖、上膛、追丟）
+public/headsethud.mjs   頭戴介面：狀態板、視線按鈕、手的骨架與射線
+public/legal.html       授權與第三方聲明
+scripts/fetch-models.mjs  下載並核對手勢模型
 public/index.html       頁面與操作說明
 examples/starter/       第一次啟動時載入的示範零件與場景
 launchd/                macOS 背景服務範本與安裝腳本
@@ -294,7 +315,8 @@ tests/                  Playwright 測試（電腦版與手機版）
 - 房間在伺服器的記憶體裡：伺服器重新啟動，開著的房間就關了（遊戲本身有存）。
 - 目前只有一種遊戲（拿能量槍射靶），編輯器可以改道具、標靶和勝負規則。有沒有打中由開槍那台判斷，伺服器只檢查合不合理——朋友之間玩沒問題，但防不了作弊。
 - 新手教學和遊戲房還不能在 VR 裡玩。
+- 手機眼鏡模式只在自由工坊，還沒在真的 iPhone、紙盒鏡片上測過（光學融合、舒適度、發熱都待驗）；自動測試用的是 Chromium 的假鏡頭播放測試圖片，不是 iPhone 後鏡頭。iPhone 要 https 才開得了鏡頭和動作感測，目前的區網 http 入口不行。
 
 ## 授權
 
-[MIT](LICENSE)。使用 [three.js](https://threejs.org/)、[Rapier](https://rapier.rs/) 與 [OpenAI Codex CLI](https://github.com/openai/codex) 打造。
+[MIT](LICENSE)。使用 [three.js](https://threejs.org/)、[Rapier](https://rapier.rs/)、[MediaPipe](https://ai.google.dev/edge/mediapipe) 與 [OpenAI Codex CLI](https://github.com/openai/codex) 打造。第三方元件的版本、授權與聲明見遊戲裡的「授權與第三方聲明」（`/legal.html`）。

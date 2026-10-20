@@ -27,6 +27,8 @@ const NODE_BIN = process.execPath;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const THREE_DIR = path.join(ROOT, 'node_modules', 'three');
 const RAPIER_DIR = path.join(ROOT, 'node_modules', '@dimforge', 'rapier3d-compat', 'dist'); // 物理引擎（WebAssembly 內嵌在 JS 裡）
+const MEDIAPIPE_DIR = path.join(ROOT, 'node_modules', '@mediapipe', 'tasks-vision'); // 手勢辨識（vision_bundle.mjs＋wasm/，在手機上推論）
+const MODELS_DIR = process.env.MODELS_DIR ? path.resolve(process.env.MODELS_DIR) : path.join(ROOT, 'models'); // 手勢模型（npm run fetch:models 下載、核對雜湊；不放進 git）
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, 'data'); // 測試時指到複本
 const PARTS_DIR = path.join(DATA_DIR, 'parts');
 const JOBS_DIR = path.join(ROOT, 'jobs');
@@ -730,7 +732,7 @@ async function serveGzip(req, res, baseDir, rel, cache) {
   res.end(entry.buf);
 }
 
-async function serveFile(res, baseDir, rel, cache = 'no-cache') {
+async function serveFile(res, baseDir, rel, cache = 'no-cache', extra = {}) {
   const file = path.resolve(baseDir, `.${path.posix.normalize(`/${rel}`)}`);
   if (!file.startsWith(baseDir + path.sep) && file !== baseDir) return send(res, 403, 'forbidden');
   try {
@@ -740,6 +742,7 @@ async function serveFile(res, baseDir, rel, cache = 'no-cache') {
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(target)] || 'application/octet-stream',
       'Cache-Control': cache,
+      ...extra,
     });
     createReadStream(target).pipe(res);
   } catch {
@@ -1096,6 +1099,13 @@ const server = http.createServer(async (req, res) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'method not allowed');
     if (p.startsWith('/vendor/three/')) return serveGzip(req, res, THREE_DIR, p.slice('/vendor/three/'.length), 'max-age=86400');
     if (p.startsWith('/vendor/rapier/')) return serveGzip(req, res, RAPIER_DIR, p.slice('/vendor/rapier/'.length), 'max-age=86400');
+    // 手勢辨識：只給執行要用的那幾個檔；模型由伺服器自己提供（瀏覽器不連外下載）
+    if (p === '/vendor/mediapipe/vision_bundle.mjs' || /^\/vendor\/mediapipe\/wasm\/vision_wasm_[a-z_]+\.(js|wasm)$/.test(p)) {
+      return serveGzip(req, res, MEDIAPIPE_DIR, p.slice('/vendor/mediapipe/'.length), 'max-age=86400');
+    }
+    if (p === '/vendor/models/hand_landmarker.task') return serveFile(res, MODELS_DIR, 'hand_landmarker.task', 'max-age=86400');
+    // 手勢 worker：只准連回這台伺服器（就算辨識程式之後換版本，也不能把東西送到別的地方）
+    if (p === '/handworker.mjs') return serveFile(res, PUBLIC_DIR, 'handworker.mjs', 'no-cache', { 'Content-Security-Policy': "connect-src 'self'" });
     const pm = p.match(/^\/parts\/([a-z]_[a-z0-9]+)\.js$/);
     if (pm) return serveFile(res, PARTS_DIR, `${pm[1]}.js`, 'max-age=31536000, immutable');
     const tm = p.match(/^\/thumbs\/([a-z]_[a-z0-9]+)\.jpg$/);

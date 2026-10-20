@@ -4,3 +4,4 @@ jobs/
 logs/
 tests/out/
 .DS_Store
+models/
