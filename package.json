@@ -26,6 +26,7 @@
     "test:rooms": "node tests/rooms.mjs",
     "test:coplay": "node tests/coplay.mjs",
     "test:tools": "node tests/tools.mjs",
+    "test:custom-tool": "node tests/custom-tool.mjs",
     "test:room-restart": "node tests/room-restart.mjs",
     "bench": "node tests/bench.mjs"
   },
