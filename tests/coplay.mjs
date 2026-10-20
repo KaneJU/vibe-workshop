@@ -40,7 +40,8 @@ const jobDirs = () => (existsSync(path.join(ROOT, 'jobs')) ? readdirSync(path.jo
 const api = async (url) => (await fetch(BASE + url)).json();
 
 const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--ignore-gpu-blocklist'] });
-browser.on('disconnected', () => console.log('⚠️ 瀏覽器斷線了'));
+let closing = false;
+browser.on('disconnected', () => !closing && console.log('⚠️ 瀏覽器在測試中途斷線了'));
 // 先打開一次自由工坊（讓它把自己的檔案寫好），再記指紋
 {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -358,6 +359,7 @@ for (const c of [A, B]) {
   check(`[${c.mobile ? '手機' : '電腦'}] 只寫遊戲與房間（沒有動到工坊）`, bad.length === 0, bad.slice(0, 3).join('、') || `${c.writes.length} 次寫入`);
   check(`[${c.mobile ? '手機' : '電腦'}] 沒有 JS 錯誤`, c.errors.length === 0, c.errors.slice(0, 2).join(' | '));
 }
+closing = true;
 await browser.close();
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} 通過`);
