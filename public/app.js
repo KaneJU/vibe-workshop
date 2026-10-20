@@ -2094,7 +2094,7 @@ window.addEventListener('resize', () => {
 
 let lastT = now();
 let lastWorldSave = 0;
-// 自動畫質（首頁、遊戲房）：連續 2 秒每格超過 40 ms，就降低解析度（2 → 1.5 → 1），再不夠就關影子；
+// 自動畫質（首頁、遊戲房）：連續 2 秒每格超過 40 ms，就降低解析度（2 → 1.5 → 1），再不夠就關影子、最後降到 0.75；
 // 順順跑 6 秒再一步步升回去。慢的手機也能玩，快的裝置看到完整畫質
 const quality = { max: Math.min(window.devicePixelRatio, 2), pr: Math.min(window.devicePixelRatio, 2), slow: 0, fast: 0, shadows: true, steps: 0 };
 // 固定最高畫質（只給前後對照拍照用：localStorage vw_quality=max）
@@ -2124,6 +2124,11 @@ function adaptQuality(rawDt) {
       quality.shadows = false;
       renderer.shadowMap.enabled = false;
       scene.traverse((o) => o.material && (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => (m.needsUpdate = true)));
+      quality.steps += 1;
+    } else if (quality.pr > 0.75) {
+      // 最後一階（很慢的電腦）：畫面用 0.75 倍解析度畫再放大
+      quality.pr = 0.75;
+      renderer.setPixelRatio(quality.pr);
       quality.steps += 1;
     }
   } else if (quality.fast > 6 && quality.pr < quality.max) {
