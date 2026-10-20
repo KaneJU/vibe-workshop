@@ -246,9 +246,10 @@ try {
   await page.evaluate(() => window.__keep(true));
   await page.screenshot({ path: path.join(OUT, 'a-04-hover.png') });
   await page.evaluate(() => window.__keep(false));
-  for (let i = 0; i < 3; i += 1) {
+  for (let i = 0; i < 8; i += 1) {
     await page.evaluate((t) => window.__hand(0, t), target);
     await page.evaluate(() => window.__frames(3));
+    if (i >= 2 && (await page.evaluate(() => window.__ws.headset.state().holding))) break;
   }
   st = await page.evaluate(() => window.__ws.headset.state());
   const held = await page.evaluate(() => window.__ws.holding?.inst.id ?? null);
@@ -267,12 +268,15 @@ try {
   await page.screenshot({ path: path.join(OUT, 'a-05-holding.png') });
   await page.evaluate(() => window.__keep(false));
   const flings0 = st.stats.flings;
-  for (let i = 0; i < 4; i += 1) {
+  // 張開手指（防抖：要連續幾次、至少 60 ms 才算放開；SwiftShader 一格可能很慢，最多送 10 次）
+  for (let i = 0; i < 10; i += 1) {
     await page.evaluate(([t]) => window.__hand(1, t, [-0.12, 0]), [target]);
     await page.evaluate(() => window.__frames(3));
+    if (i >= 3 && !(await page.evaluate(() => window.__ws.headset.state().holding))) break;
   }
   st = await page.evaluate(() => window.__ws.headset.state());
-  check('張開手指 → 放下（正常放手）', !st.holding && !(await page.evaluate(() => window.__ws.holding)) && st.stats.flings === flings0 + 1);
+  const physHold = await page.evaluate(() => window.__ws.holding?.inst.id ?? null);
+  check('張開手指 → 放下（正常放手）', !st.holding && !physHold && st.stats.flings === flings0 + 1, `holding ${st.holding} phys ${physHold} flings ${flings0}→${st.stats.flings} safe ${st.stats.safeDrops} ${JSON.stringify(st.stats.events)} ${st.gesture.status}`);
   await sleep(1200);
   const dropped = await page.evaluate(() => window.__ws.instances.get('i_demo_robot').object.position.toArray());
   check('機器人被搬到新位置', Math.hypot(dropped[0] - before.robot[0], dropped[2] - before.robot[2]) > 0.1, `${before.robot.map((v) => v.toFixed(2))} → ${dropped.map((v) => v.toFixed(2))}`);

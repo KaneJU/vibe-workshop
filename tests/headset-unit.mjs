@@ -8,7 +8,8 @@ import { deviceQuaternion, yawOf, createHeadPose, physicallyLandscape } from '..
 import { createGesture, analyzeHand, pinchRatio, imageToCamera, intrinsics, adjustLandmarks } from '../public/hands.mjs';
 import { createHandTracker, cameraErrorCode } from '../public/handtrack.mjs';
 import { loadModel, VISION } from '../public/handinfer.mjs';
-import { cleanCam, loadSettings } from '../public/headset.mjs';
+import { cleanCam, loadSettings, wrapLines } from '../public/headset.mjs';
+import { HAND_ERRORS } from '../public/handtrack.mjs';
 
 const results = [];
 const check = (name, ok, detail = '') => {
@@ -221,6 +222,14 @@ const CAM = { width: 640, height: 480, hfovDeg: 64, rotation: 0, mirror: false }
   const s = loadSettings(storage);
   check('鏡頭設定：不合法的旋轉擋掉、視角夾在範圍內', s.cam.rotation === 0 && s.cam.hfovDeg === 100 && s.cam.prefer === 'left' && s.stereo.ipdMm === 70);
   check('壞掉的設定字串 → 預設值', loadSettings({ getItem: () => '{oops' }).cam.hfovDeg === cleanCam().hfovDeg);
+}
+
+// ---------------- 頭戴裡的說明文字 ----------------
+{
+  const all = Object.values(HAND_ERRORS).map((m) => wrapLines(m));
+  check('每一則鏡頭／模型錯誤說明都切成 ≤3 行、不會被截斷', all.every((l) => l.length <= 3 && !l.join('').endsWith('…')), `最多 ${Math.max(...all.map((l) => l.length))} 行`);
+  const m = wrapLines(HAND_ERRORS['model-missing']).join('|');
+  check('英文指令不從中間斷開、標點不放行首', m.includes('npm run fetch:models') && !/\|[，。：]/.test(m), m);
 }
 
 const failed = results.filter((r) => !r.ok);

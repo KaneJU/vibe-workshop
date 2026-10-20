@@ -102,6 +102,9 @@ export function createHud({ THREE, camera, scene }) {
   const status = panel({ width: 0.78, height: 0.11 }, 0, 0.5);
   const camState = panel({ width: 0.78, height: 0.09 }, 0, 0.39);
   const toastP = panel({ width: 1.2, height: 0.13 }, 0, -0.36);
+  // 說明（鏡頭打不開、沒有動作感測…）：最多三行，字才不會為了擠成一行縮到看不見
+  const help = panel({ width: 1.1, height: 0.27 }, 0, 0.2);
+  help.mesh.visible = false;
   const diag = panel({ width: 0.62, height: 0.62, ppm: 380, align: 'left' }, -0.8, 0.05);
   diag.mesh.visible = false;
 
@@ -208,6 +211,15 @@ export function createHud({ THREE, camera, scene }) {
     },
     setCamera(text, warn = false) {
       camState.set(text, { color: warn ? '#ffd166' : '#9fb8c8', border: warn ? 'rgba(255,209,102,0.6)' : 'rgba(56,225,255,0.3)' });
+    },
+    setHelp(lines) {
+      if (!lines?.length) {
+        help.set('');
+        return;
+      }
+      const list = [...lines];
+      while (list.length < 3) list.push(''); // 固定三行高：字的大小不跟著行數變
+      help.set(list, { color: '#ffe3a3', border: 'rgba(255,209,102,0.6)' });
     },
     toast(text, ms, t) {
       toastP.set(text);

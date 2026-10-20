@@ -29,6 +29,32 @@ const ROLL_DEAD = (8 * Math.PI) / 180; // 手轉不到 8° 不轉東西（手勢
 const CALIB_MS = 8000; // 校正圖顯示多久（戴著摸不到按鈕，時間到自己回到世界）
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
+// 頭戴裡的長句子切成幾行（每行約 18 個中文字寬）：英文字、指令不從中間斷，標點不放行首；最多 3 行
+export function wrapLines(text, width = 18, max = 3) {
+  const units = String(text).match(/[\x21-\x7e]+|\s+|./gu) || [];
+  const uw = (u) => (/^[\x00-\xff]+$/.test(u) ? u.length * 0.55 : [...u].length);
+  const lines = [];
+  let cur = '';
+  let curW = 0;
+  for (const u of units) {
+    const w = uw(u);
+    if (curW + w > width && cur.trim() && !/^[，。：；、！？）」』…]$/.test(u)) {
+      lines.push(cur.trimEnd());
+      cur = '';
+      curW = 0;
+      if (/^\s+$/.test(u)) continue;
+    }
+    cur += u;
+    curW += w;
+  }
+  if (cur.trim()) lines.push(cur.trimEnd());
+  if (lines.length > max) {
+    lines.length = max;
+    lines[max - 1] = `${lines[max - 1].slice(0, -1)}…`;
+  }
+  return lines;
+}
+
 export function cleanCam(raw = {}) {
   const c = { ...CAM_DEFAULTS };
   if (raw && typeof raw === 'object') {
@@ -465,13 +491,13 @@ export function createHeadset({ THREE, renderer, scene, camera, controls, phys, 
     return { text: '用手指向想抓的東西，捏下去就抓起來', color: '#d9f6ff', hand: 'tracking' };
   }
 
+  // 鏡頭／動作感測的狀態：短的一行放狀態板，長的說明（為什麼、怎麼辦）放三行的說明板
   function cameraText() {
     const err = tracker.error;
-    if (err) return { text: tracker.error.message || HAND_ERRORS[err.code] || err.code, warn: true };
     const hs = head.state;
-    if (hs === 'insecure') return { text: '這是 http 連線：沒有動作感測，拖曳畫面看四周', warn: true };
-    if (hs === 'denied') return { text: '動作感測被拒絕：拖曳畫面看四周', warn: true };
-    if (hs === 'nosignal' || hs === 'unsupported') return { text: '沒有動作感測訊號：拖曳畫面看四周', warn: true };
+    const headHelp = { insecure: '這是 http 連線：手機不給動作感測。拖曳畫面看四周。', denied: '動作感測被拒絕：拖曳畫面看四周。', nosignal: '沒有動作感測訊號：拖曳畫面看四周。', unsupported: '這台裝置沒有動作感測：拖曳畫面看四周。' }[hs];
+    if (err) return { text: '鏡頭／手勢辨識有問題', warn: true, help: wrapLines(`${err.message || HAND_ERRORS[err.code] || err.code}${headHelp && hs !== 'insecure' ? headHelp : ''}`) };
+    if (headHelp) return { text: '沒有動作感測：拖曳畫面看四周', warn: true, help: hs === 'nosignal' ? null : wrapLines(headHelp) };
     const st = tracker.stats();
     if (tracker.state === 'running') return { text: `鏡頭辨識中 ${st.hz || 0} 次／秒 · 按住螢幕 1.2 秒離開`, warn: false };
     return { text: '', warn: false };
@@ -489,6 +515,7 @@ export function createHeadset({ THREE, renderer, scene, camera, controls, phys, 
     hud.setStatus(st.text, st.color);
     const ct = cameraText();
     hud.setCamera(ct.text, ct.warn);
+    hud.setHelp(ct.help);
     if (handOn) {
       const to = holding ? null : hover ? hover.point : rayEnd.copy(pinchWorld).addScaledVector(dirWorld, 3);
       hud.setHand(points, st.hand, pinchWorld, to);
