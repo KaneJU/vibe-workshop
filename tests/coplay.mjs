@@ -40,6 +40,7 @@ const jobDirs = () => (existsSync(path.join(ROOT, 'jobs')) ? readdirSync(path.jo
 const api = async (url) => (await fetch(BASE + url)).json();
 
 const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--ignore-gpu-blocklist'] });
+browser.on('disconnected', () => console.log('⚠️ 瀏覽器斷線了'));
 // 先打開一次自由工坊（讓它把自己的檔案寫好），再記指紋
 {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -61,6 +62,7 @@ async function client(kind) {
   const page = await ctx.newPage();
   const c = { kind, mobile, ctx, page, errors: [], writes: [] };
   page.on('pageerror', (e) => c.errors.push(`pageerror: ${e.message}`));
+  page.on('crash', () => console.log(`⚠️ [${kind}] 頁面當掉了（renderer crash）`));
   page.on('console', (m) => m.type() === 'error' && c.errors.push(`console: ${m.text()}`));
   page.on('request', (r) => r.method() !== 'GET' && c.writes.push(`${r.method()} ${new URL(r.url()).pathname}`));
   const cdp = mobile ? await ctx.newCDPSession(page) : null;
@@ -74,11 +76,11 @@ async function client(kind) {
       return false;
     }
   };
-  c.tap = async (sel) => {
+  c.tap = async (sel, timeout) => {
     const loc = page.locator(sel).first();
     await loc.waitFor({ state: 'visible', timeout: 15000 });
-    if (mobile) await loc.tap();
-    else await loc.click();
+    if (mobile) await loc.tap(timeout ? { timeout } : undefined);
+    else await loc.click(timeout ? { timeout } : undefined);
   };
   c.press = async (p) => (mobile ? cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: p.x, y: p.y, id: 1, radiusX: 4, radiusY: 4, force: 1 }] }) : (await page.mouse.move(p.x, p.y), page.mouse.down()));
   c.move = (p) => (mobile ? cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: p.x, y: p.y, id: 1, radiusX: 4, radiusY: 4, force: 1 }] }) : page.mouse.move(p.x, p.y));
@@ -109,7 +111,11 @@ async function aimAndFire(c, { maxMs = 15000 } = {}) {
     const dy = cy - pick.y;
     if (Math.hypot(dx, dy) < (c.mobile ? 12 : 16) && !pick.behind) {
       const before = (await c.st()).players.find((p) => p.id === s.me.playerId)?.score ?? 0;
-      await c.tap('#btnAction');
+      // 回合可能剛好在這一瞬間結束（結算卡蓋住整個畫面，⚡ 按不到）：按不到就看是不是已經結束了
+      if (!(await c.tap('#btnAction', 3000).then(() => true, () => false))) {
+        if ((await c.st()).phase !== 'playing') return false;
+        await c.tap('#btnAction'); // 還在比賽中卻按不到：照常再按一次，按不到就讓測試失敗
+      }
       await c.waitFor((n) => {
         const g = window.__ws.game;
         return g.phase !== 'playing' || (g.players.find((p) => p.id === g.me.playerId)?.score ?? 0) > n;
