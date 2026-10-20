@@ -447,6 +447,7 @@ export function createGame(env) {
   }
 
   async function onPhase(phase, before) {
+    if (phase === 'ended' && before === 'playing') guardCard();
     if (phase === 'countdown' || phase === 'playing') {
       hideCard();
       sheet = null;
@@ -514,6 +515,14 @@ export function createGame(env) {
   const card = $('#gameCard');
   function hideCard() {
     card.hidden = true;
+  }
+  // 比賽結束那一刻手指常常還在畫面上（拖曳瞄準、按 ⚡）：結算卡剛跳出來的 0.8 秒按鈕不吃點按，
+  // 不然會誤按到「再玩一次／改規則再玩／離開房間」
+  let guardTimer = 0;
+  function guardCard() {
+    card.classList.add('guard');
+    clearTimeout(guardTimer);
+    guardTimer = setTimeout(() => card.classList.remove('guard'), 800);
   }
   function showCard({ icon = '', title, body = '', buttons = [] }) {
     $('#gameCardIcon').textContent = icon;

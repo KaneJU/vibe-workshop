@@ -215,6 +215,13 @@ await B.shot('02-lobby');
 await A.tap('#gameCardBtns button:has-text("開始比賽")');
 const bothPlaying = await Promise.all([A.waitFor(() => window.__ws.game.phase === 'playing', null, 15000), B.waitFor(() => window.__ws.game.phase === 'playing', null, 15000)]);
 check('[兩邊] 房主按開始 → 兩邊一起倒數、一起開始', bothPlaying.every(Boolean));
+// 只觀察（不改任何東西）：結算卡跳出來那一刻，按鈕能不能按、多久之後能按
+await A.page.evaluate(() => {
+  const card = document.querySelector('#gameCard');
+  const btns = document.querySelector('#gameCardBtns');
+  window.__cardLog = [];
+  new MutationObserver(() => window.__cardLog.push({ t: performance.now(), shown: !card.hidden, pe: getComputedStyle(btns).pointerEvents, title: document.querySelector('#gameCardTitle').textContent })).observe(card, { attributes: true, attributeFilter: ['hidden', 'class'] });
+});
 await sleep(600);
 a = await A.st();
 b = await B.st();
@@ -235,6 +242,14 @@ check('[兩邊] 用拖曳瞄準＋⚡ 真的打中標靶、伺服器計分', ha 
 const top = a.results?.[0];
 check('[兩邊] 先拿到 3 分 → 比賽結束（目標達成）', a.reason === 'goal' && top?.score >= 3 && a.winner === top.id, JSON.stringify(a.results));
 check('[兩邊] 兩邊的結算一模一樣', JSON.stringify(a.results) === JSON.stringify(b.results) && a.winner === b.winner);
+const cardLog = await A.page.evaluate(() => window.__cardLog);
+const shownAt = cardLog.find((e) => e.shown && /贏了|平手/.test(e.title));
+const armedAt = shownAt && cardLog.find((e) => e.t > shownAt.t && e.pe !== 'none');
+check(
+  '[手機] 結算剛跳出來的一下子按鈕不吃點按（比賽最後一刻手指還在畫面上，不會誤按「改規則再玩」），之後才能按',
+  shownAt?.pe === 'none' && armedAt && armedAt.t - shownAt.t >= 700 && (await A.page.textContent('#gameCardTitle')) === shownAt.title,
+  shownAt ? `跳出來時 pointer-events: ${shownAt.pe} → ${armedAt ? `${Math.round(armedAt.t - shownAt.t)} ms 後可以按` : '沒有恢復'}` : JSON.stringify(cardLog),
+);
 await A.shot('07-results');
 await B.shot('05-results');
 

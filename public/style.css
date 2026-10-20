@@ -401,3 +401,6 @@ body.mode-game .ctl-hint { bottom: calc(250px + env(safe-area-inset-bottom)); }
   .g-scores .chip b { font-size: 16px; }
   .g-timer { padding: 5px 9px; font-size: 13px; }
 }
+/* 結算剛跳出來的 0.8 秒按鈕不吃點按（game.mjs guardCard），按鈕淡淡亮起來表示可以按了 */
+#gameCardBtns { transition: opacity 0.25s; }
+#gameCard.guard #gameCardBtns { pointer-events: none; opacity: 0.5; }
