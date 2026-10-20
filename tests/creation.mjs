@@ -8,6 +8,10 @@
 // 5 connector 關掉：做好的作品照樣能玩
 // 6 語音：合成的辨識事件（不是真麥克風）→ 中間結果只顯示、最終結果只建一個工作；說到一半換世界，工作仍綁在開口那一層
 // 7 連續換版 6 次：舊版 Worker 都收掉、畫面物件數穩定
+// 8 眼鏡模式裡創作：捏住作品＝點它、點一下螢幕開始說話（合成手部關鍵點、合成辨識事件）
+// 9 真 Codex 生成過的作品（fixture）：快速點按、遊戲結束後重來
+// 10 原子換版：同一條作品線兩個實例，第 2 個候選起不來 → 兩個都不換、狀態與存檔不動、資源回收；修好後一起換；
+//    觀察期內出錯 → 全部退回；亂數狀態跟著存檔接續
 //   node tests/creation.mjs        輸出 tests/out/creation/
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
@@ -74,9 +78,21 @@ const TOWER = `vibe.define({
 });`;
 const STAR = TOWER.replace(/塔高/g, '星星').replace("'#ffcc33'", "'#ff66cc'");
 const VARIANT = (n) => ORB2.replace("'v2'", `'v${n}'`).replace("color: '#ff9933'", `color: '#${(0x224466 + n * 0x111111).toString(16).slice(0, 6)}'`);
+// 原子換版用：倍率版（stateSchema 3，保留 hits）、用亂數的作品（亂數接續）
+const ORB_MULT = ORB2.replace("'v2'", "'mult'").replace('s.hits += 1; s.combo += 1;', 's.hits += 2; s.combo += 1;').replace('migrate(old, from) { return { ...old, combo: 0 }; }', 'migrate(old, from) { return { combo: 0, ...old, mult: 2 }; }');
+const DICE = `vibe.define({
+  init() { return { draws: [] }; },
+  tick(s) { s.draws.push(Math.floor(vibe.random() * 1e6)); if (s.draws.length > 8) s.draws.shift(); },
+  view(s) { return [{ id: 'die', shape: 'box', pos: [0, 0.4, 0], size: [0.6, 0.6, 0.6], color: '#ffffff' }]; },
+  hud(s) { return ['骰 ' + (s.draws[s.draws.length - 1] ?? '-')]; },
+});`;
+const DICE2 = DICE.replace("color: '#ffffff'", "color: '#ffdd55'").replace("hud(s) { return ['骰 '", "hud(s) { return ['骰2 '");
 // 真 Codex 生成過的作品（原樣，見 tests/fixtures/creation/catch-stars/README.md）
 const CATCH = readFileSync(path.join(HERE, 'fixtures', 'creation', 'catch-stars', 'main.js'), 'utf8');
 const PLAN = [
+  [/倍率/, ['點球', ORB_MULT, 3]],
+  [/骰子2/, ['骰子', DICE2, 1]],
+  [/骰子/, ['骰子', DICE, 1]],
   [/接星星/, ['接星星', CATCH, 1]],
   [/點球/, ['點球', ORB, 1]],
   [/連擊/, ['點球', ORB2, 2]],
@@ -169,8 +185,9 @@ try {
   check('畫面上的配對碼可以讓 connector 配對（指令也顯示在畫面上）', !!token && (await page.locator('#cPairCmd').innerText()).includes('vibe-connector.mjs pair'));
   await page.click('#cPairClose');
 
-  const waitJob = (pred, ms = 30000) =>
-    page.waitForFunction(pred, null, { timeout: ms }).catch(async (e) => {
+  // waitJob(條件) 或 waitJob(條件, 毫秒)；條件要用參數時：waitJob(條件, { arg, ms })
+  const waitJob = (pred, opt = 30000) =>
+    page.waitForFunction(pred, typeof opt === 'object' ? opt.arg : null, { timeout: typeof opt === 'object' ? opt.ms ?? 30000 : opt }).catch(async (e) => {
       console.log('等待逾時，現在的狀態：', JSON.stringify(await S()).slice(0, 1500), '\nconnector 處理過：', JSON.stringify(handled).slice(0, 800), '\n頁面錯誤：', errors.slice(0, 5).join(' | '), '\n工作提示：', await page.locator('#cJob .txt').innerText().catch(() => ''));
       throw e;
     });
@@ -373,6 +390,85 @@ try {
   const after = (await S()).host;
   report.notes.swapResources = { base, after };
   check('連續換版 6 次：舊版 Worker 收掉、實體與 geometry 數量不累積', after.workers <= base.workers && after.meshes <= base.meshes + 2 && after.geometries <= base.geometries + 4, `workers ${base.workers}→${after.workers} meshes ${base.meshes}→${after.meshes} geometries ${base.geometries}→${after.geometries}`);
+  // 10 原子換版（review 退件的情境）：同一條作品線兩個實例，第 2 個候選起不來 → 兩個都留在舊版、狀態不動、沒有半套存檔
+  await page.evaluate(() => window.__ws.creation.setMode('new'));
+  const orbLin = (await S()).live.find((x) => x.name === '點球').lineage;
+  await page.evaluate((lin) => window.__ws.creation.placeNew(lin, window.__ws.creation.state().live.find((x) => x.lineage === lin).version), orbLin);
+  await page.waitForFunction((lin) => window.__ws.creation.state().live.filter((x) => x.lineage === lin).length === 2, orbLin);
+  const twins = async () => (await S()).live.filter((x) => x.lineage === orbLin);
+  const [t1] = await twins();
+  await page.evaluate((id) => { const c = window.__ws.creation; for (let i = 0; i < 3; i += 1) c.host().event(id, { type: 'click', target: 'orb' }); }, t1.hostId);
+  await sleep(500);
+  const before10 = (await twins()).map((x) => ({ id: x.id, v: x.version, hud: x.hud[0] }));
+  const workers10 = (await S()).host.workers;
+  // 跟獨立驗收的重現一樣：讓 host.spawn 對「新版的第 2 個正式候選」回 ok:false（影子試跑的不算）
+  await page.evaluate(() => {
+    const h = window.__ws.creation.host();
+    const original = h.spawn.bind(h);
+    let n = 0;
+    h.__origSpawn = original;
+    h.spawn = async (id, key, opts) => {
+      if (!opts?.hidden && /@v\d+$/.test(id) && ++n === 2) return { ok: false, error: '（測試注入）第 2 個正式候選起不來' };
+      return original(id, key, opts);
+    };
+  });
+  await page.evaluate(() => { const c = window.__ws.creation; c.select(c.state().live.find((x) => x.name === '點球').id); c.setMode('modify'); });
+  const rej0 = (await S()).stats.rejected;
+  await page.evaluate(() => window.__ws.creation.submit('加上分數倍率'));
+  await waitJob((n) => window.__ws.creation.state().stats.rejected > n, { arg: rej0 });
+  await page.evaluate(() => {
+    const h = window.__ws.creation.host();
+    h.spawn = h.__origSpawn;
+  });
+  await sleep(400);
+  const after10 = (await twins()).map((x) => ({ id: x.id, v: x.version, hud: x.hud[0] }));
+  const s10 = await S();
+  const saved10 = (await fetch(`${BASE}/api/cworlds/root`).then((r) => r.json())).world.items.filter((i) => i.lineage === orbLin);
+  check('原子換版：第 2 個候選起不來 → 兩個實例都留在舊版、分數不動、沒有觀察中的半套', JSON.stringify(after10) === JSON.stringify(before10) && !s10.watching.length && s10.live.every((x) => !x.hostId.includes('@shadow')), `${JSON.stringify(before10)} → ${JSON.stringify(after10)}`);
+  check('原子換版失敗：候選與新版 Worker 清掉（資源回到原本）、存檔裡兩個都還是舊版', s10.host.workers === workers10 && saved10.length === 2 && saved10.every((i) => i.version === before10[0].v), `workers ${workers10}→${s10.host.workers}；存檔 ${saved10.map((i) => 'v' + i.version).join(',')}`);
+  // 同一個工作修好（connector 再交一次）→ 這次兩個一起換上，各自分數保留
+  await waitJob((v) => window.__ws.creation.state().live.filter((x) => x.name === '點球').every((x) => x.version > v), { arg: before10[0].v, ms: 40000 });
+  await sleep(600);
+  const after10b = await twins();
+  check('修好後兩個實例一起換上新版（同一版、各自分數保留）', after10b.length === 2 && new Set(after10b.map((x) => x.version)).size === 1 && after10b.every((x, i) => Number(x.hud[0].match(/\d+/)[0]) >= Number(before10[i].hud.match(/\d+/)[0])), after10b.map((x) => `v${x.version} ${x.hud[0]}`).join(' / '));
+  await sleep(3300);
+  // 觀察期內多實例出錯 → 全部退回
+  const rb0 = (await S()).stats.rollbacks;
+  const pre11 = (await twins()).map((x) => ({ v: x.version, hud: x.hud[0] }));
+  await page.evaluate(() => window.__ws.creation.submit('玩家站遠一點也要能玩'));
+  await waitJob((n) => window.__ws.creation.state().stats.rollbacks > n, { arg: rb0, ms: 40000 });
+  await sleep(500);
+  const post11 = (await twins()).map((x) => ({ v: x.version, hud: x.hud[0], broken: x.broken }));
+  check('觀察期內新版出錯 → 兩個實例全部退回上一版與換版當下的分數', post11.length === 2 && post11.every((x, i) => x.v === pre11[i].v && !x.broken && Number(x.hud.match(/\d+/)[0]) >= Number(pre11[i].hud.match(/\d+/)[0])), `${JSON.stringify(pre11)} → ${JSON.stringify(post11)}`);
+  await waitJob((v) => window.__ws.creation.state().live.filter((x) => x.name === '點球').every((x) => x.version > v && x.hud.join(' ').includes('v3fix')), { arg: pre11[0].v, ms: 40000 });
+  await sleep(3300);
+  check('觀察期過後只剩新版 Worker（舊版與退回過的版本都收掉）', (await S()).host.workers <= workers10, `workers ${(await S()).host.workers}`);
+  // 亂數接續：同一份存檔＋亂數狀態，舊版與新版接著抽到的數字一樣；存檔也記下亂數狀態
+  await page.evaluate(() => window.__ws.creation.setMode('new'));
+  await page.evaluate(() => window.__ws.creation.submit('擲骰子'));
+  await waitJob(() => window.__ws.creation.state().live.some((x) => x.name === '骰子'));
+  await sleep(800);
+  const rngCheck = await page.evaluate(async () => {
+    const c = window.__ws.creation;
+    const h = c.host();
+    const L = c.state().live.find((x) => x.name === '骰子');
+    const snap = await h.snapshot(L.hostId);
+    const key = L.hostId.split('@')[0] && `${L.lineage}@${L.version}`;
+    await h.spawn('ref_a', key, { state: snap.state, fromSchema: snap.schema, rng: snap.rng, hidden: true });
+    await h.spawn('ref_b', key, { state: snap.state, fromSchema: snap.schema, rng: snap.rng, hidden: true });
+    await h.tickHidden('ref_a', 5, 1 / 30);
+    await h.tickHidden('ref_b', 5, 1 / 30);
+    const a = (await h.snapshot('ref_a')).state.draws.slice(-5);
+    const b = (await h.snapshot('ref_b')).state.draws.slice(-5);
+    h.kill('ref_a');
+    h.kill('ref_b');
+    return { rng: snap.rng, a, b };
+  });
+  check('亂數接續：同一份存檔帶亂數狀態重建，接下來抽到的數字完全一樣', Number.isInteger(rngCheck.rng) && JSON.stringify(rngCheck.a) === JSON.stringify(rngCheck.b), JSON.stringify(rngCheck));
+  await page.evaluate(() => window.__ws.creation.saveWorld());
+  const diceSaved = (await fetch(`${BASE}/api/cworlds/root`).then((r) => r.json())).world.items.find((i) => i.state?.draws);
+  check('存檔裡有亂數狀態（重開後接著抽）', Number.isInteger(diceSaved?.rng), `rng ${diceSaved?.rng}`);
+
   // 9 真 Codex 生成過的作品（fixture）：快速點按也收得到（按下至少維持 120 ms），遊戲結束後點一下空白鍵能重來
   await page.evaluate(() => window.__ws.creation.setMode('new'));
   await page.fill('#cInput', '接星星');
@@ -449,14 +545,24 @@ try {
   await page.evaluate(() => window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', (window.__sensor = { alpha: 0, beta: 90, gamma: 0 }))));
   await page.evaluate(() => window.__frames(3));
   await page.waitForFunction(() => window.__ws.headset.active);
+  // 在一個乾淨的子世界只放一個點球（根世界前面放了很多東西，射線會被擋住）：瞄它的 orb、讀它的命中數
+  const orbL = (await S()).live.find((x) => x.name === '點球');
+  page.__nextName = '眼鏡測試';
+  const hsWorld = await page.evaluate(() => window.__ws.creation.createChild());
+  await page.evaluate((id) => window.__ws.creation.enter(id), hsWorld);
+  await page.waitForFunction((id) => window.__ws.creation.state().world.id === id, hsWorld);
+  await page.evaluate(([lin, v]) => window.__ws.creation.placeNew(lin, v), [orbL.lineage, orbL.version]);
+  await page.waitForFunction(() => window.__ws.creation.state().live.length === 1);
+  const aimId = (await S()).live[0].hostId;
   const orbPos = () =>
-    page.evaluate(() => {
+    page.evaluate((id) => {
       const root = window.__ws.scene.getObjectByName('creation-items');
+      const g = root.children.find((c) => c.userData.instId === id);
       let m = null;
-      root.traverse((o) => o.userData?.entityId === 'orb' && o.parent?.visible !== false && (m = o));
+      g.traverse((o) => o.userData?.entityId === 'orb' && (m = o));
       return m.getWorldPosition(new window.__ws.THREE.Vector3()).toArray();
-    });
-  const hitsOf = async () => Number((await S()).live.find((x) => x.name === '點球').hud[0].match(/\d+/)[0]);
+    }, aimId);
+  const hitsOf = async () => Number((await S()).live.find((x) => x.hostId === aimId).hud[0].match(/\d+/)[0]);
   const h0 = await hitsOf();
   await page.evaluate(async (t) => window.__lookAt(t), await orbPos()); // 先轉頭看它（後鏡頭只看得到前方 ±32°）
   await page.evaluate(() => window.__frames(3));

@@ -260,7 +260,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
 
   // ---------------- 世界：進入、返回、存檔 ----------------
   async function saveWorld() {
-    if (!world || saving) return saving;
+    if (!world || saving || txn) return saving; // 換版交易中不存檔（不會存到半套）
     saving = (async () => {
       try {
         for (const L of live.values()) {
@@ -340,6 +340,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   async function enter(worldId, { save = true } = {}) {
     if (busy) return;
     busy = true;
+    await swapChain; // 換版交易做完才離開這一層
     try {
       if (world && save) await saveWorld();
       const w = (await api('GET', `/api/cworlds/${worldId}`)).world;
@@ -470,82 +471,135 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     for (const p of mine) swapLineage(p.lineage, p.version, { job: { id: p.jobId } });
   }
 
-  // 換版：影子試跑 → 同一格切換 → 觀察 → 收掉舊版（或退回）
-  async function swapLineage(lineage, version, J) {
+  // 換版是一筆交易（同一條作品線在這一層的所有實例一起換，不會半套）：
+  //   影子試跑（隱藏、不影響世界）→ 暫停這一層的步進 → 準備：每個實例拿最後存檔、建好新版候選（先藏著）→
+  //   重查（還在同一層、實例沒被換掉）→ 同一格提交：候選全部現身、舊的全部收掉 → 恢復步進、存檔、觀察 3 秒
+  //   準備或重查任何一步失敗：候選全部清掉、舊版原封不動（位置、分數、schema、亂數都沒動過），不存檔
+  //   觀察期內任何一個新實例出錯：全部退回舊版和換版當下的存檔（含亂數）
+  let txn = false; // 交易中：暫停步進與存檔
+  let swapChain = Promise.resolve();
+  const serial = (fn) => {
+    const p = swapChain.then(fn, fn);
+    swapChain = p.catch(() => {});
+    return p;
+  };
+  const groupOf = (hostId) => root.children.find((c) => c.userData.instId === hostId);
+  function swapLineage(lineage, version, J) {
+    return serial(() => doSwap(lineage, version, J));
+  }
+  async function doSwap(lineage, version, J) {
+    const w0 = world;
     const targets = [...live.values()].filter((L) => L.lineage === lineage && L.version < version && !L.broken);
     if (!targets.length) return { ok: true, swapped: 0 };
-    let newPkg;
+    let newPkg = null;
+    const candidates = []; // 已建好的新版候選 hostId
+    const reject = (message) => {
+      for (const id of candidates) host.kill(id);
+      if (newPkg && ![...live.values()].some((L) => L.key === newPkg.key)) host.unload(newPkg.key);
+      txn = false;
+      stats.rejected += 1;
+      if (J?.job?.id)
+        api('POST', `/api/create/${J.job.id}/runtime-fail`, { message }).then(() => {
+          const JJ = jobs.get(J.job.id);
+          if (JJ) {
+            JJ.done = false;
+            pollJobs();
+          }
+        }, () => {});
+      setJobText(`新版 v${version} ${message}\n舊版照常在玩（全部 ${targets.length} 個都沒換）；已經請你的 Codex 修正`, { warn: true });
+      return { ok: false, error: message };
+    };
     try {
       newPkg = await loadPkg(lineage, version);
     } catch (e) {
       return reject(`新版讀不到：${e.message}`);
     }
-    // 1. 影子試跑：用每個實例「現在的存檔」跑 migrate＋30 步（不畫、不影響世界）
+    // 1. 影子試跑：用每個實例「現在的存檔」跑 migrate＋30 步（隱藏的實例：不畫、不影響世界）
     for (const L of targets) {
-      const snap = await host.snapshot(L.hostId);
+      let snap;
+      try {
+        snap = await host.snapshot(L.hostId);
+      } catch (e) {
+        return reject(`拿不到存檔：${e.message}`);
+      }
       const sid = `${L.item.id}@shadow${version}`;
-      const r = await host.spawn(sid, newPkg.key, { state: snap.state, fromSchema: snap.schema, hidden: true });
+      const r = await host.spawn(sid, newPkg.key, { state: snap.state, fromSchema: snap.schema, rng: snap.rng, hidden: true });
       const t = r.ok ? await host.tickHidden(sid, 30, TICK) : r;
       host.kill(sid);
       if (!t.ok) return reject(`影子試跑沒過：${t.error}`);
     }
-    // 2. 切換：拿最後的存檔交給新版（同一個實例 id、同一個位置；舊的先藏起來，新的出來再收）
-    const olds = [];
-    for (const L of targets) {
-      const snap = await host.snapshot(L.hostId);
-      const old = { itemId: L.item.id, hostId: L.hostId, key: L.key, version: L.version, snap };
-      const g = root.children.find((c) => c.userData.instId === L.hostId);
-      if (g) g.visible = false;
+    // 2. 準備：暫停步進（存檔不會再變），每個實例拿最後存檔、建新版候選（先藏起來、也不會被步進）
+    txn = true;
+    if (saving) await saving;
+    const prepared = [];
+    for (const [i, L] of targets.entries()) {
+      let snap;
+      try {
+        snap = await host.snapshot(L.hostId);
+      } catch (e) {
+        return reject(`準備時拿不到存檔：${e.message}`);
+      }
       const hostId = `${L.item.id}@v${version}`;
       const r = await host.spawn(hostId, newPkg.key, { state: snap.state, fromSchema: snap.schema, rng: snap.rng });
-      if (!r.ok) {
-        if (g) g.visible = true;
-        return reject(`切換時起不來：${r.error}`);
-      }
+      if (r.ok) candidates.push(hostId);
+      if (!r.ok) return reject(`準備第 ${i + 1} 個時起不來：${r.error}`);
+      const g = groupOf(hostId);
+      if (g) g.visible = false;
       host.setTransform(hostId, L.item.pos, L.item.rotY || 0);
+      prepared.push({ L, snap, hostId, old: { itemId: L.item.id, hostId: L.hostId, key: L.key, version: L.version, name: L.name, snap } });
+    }
+    // 3. 重查：還在同一層、每個實例還是原本那一個（沒被移除、換掉、或在這期間壞掉）
+    if (world !== w0 || prepared.some(({ L, old }) => live.get(old.itemId) !== L || L.hostId !== old.hostId || L.broken)) return reject('準備期間世界或作品變了，這次不換');
+    // 4. 提交：同一格（中間沒有 await）候選全部現身、舊的全部收掉
+    for (const { L, hostId } of prepared) {
+      const g = groupOf(hostId);
+      if (g) g.visible = true;
       host.kill(L.hostId);
       Object.assign(L, { hostId, key: newPkg.key, version, name: newPkg.manifest.name || L.name });
       L.item.version = version;
-      olds.push(old);
     }
     stats.swaps += 1;
-    watching.set(lineage, { until: performance.now() + SWAP_WATCH_MS, olds, newKey: newPkg.key, job: J?.job, version });
+    watching.set(lineage, { until: performance.now() + SWAP_WATCH_MS, olds: prepared.map((x) => x.old), newKey: newPkg.key, job: J?.job, version });
+    txn = false;
     renderHud();
     saveWorld();
-    toast(`🔁 換上 v${version}（狀態保留）`);
-    return { ok: true, swapped: olds.length };
-
-    function reject(message) {
-      stats.rejected += 1;
-      if (!live.size || ![...live.values()].some((L) => L.key === newPkg?.key)) newPkg && host.unload(newPkg.key);
-      if (J?.job?.id) api('POST', `/api/create/${J.job.id}/runtime-fail`, { message }).then(() => {
-        const JJ = jobs.get(J.job.id);
-        if (JJ) {
-          JJ.done = false;
-          pollJobs();
-        }
-      }, () => {});
-      setJobText(`新版 v${version} ${message}\n舊版照常在玩；已經請你的 Codex 修正`, { warn: true });
-      return { ok: false, error: message };
-    }
+    toast(`🔁 ${prepared.length} 個「${newPkg.manifest.name || ''}」一起換上 v${version}（狀態保留）`);
+    return { ok: true, swapped: prepared.length };
   }
-  // 觀察期：新版出錯就退回舊版（切換當下的狀態）
-  async function rollback(lineage, why) {
+  // 觀察期：任何一個新實例出錯 → 這次換上的全部退回舊版（換版當下的存檔、亂數）
+  function rollback(lineage, why) {
+    return serial(() => doRollback(lineage, why));
+  }
+  async function doRollback(lineage, why) {
     const w = watching.get(lineage);
     if (!w) return;
     watching.delete(lineage);
+    txn = true;
     stats.rollbacks += 1;
-    for (const o of w.olds) {
-      const L = live.get(o.itemId);
-      if (!L) continue;
-      host.kill(L.hostId);
-      await host.load(o.key, pkgs.get(o.key).code, pkgs.get(o.key).manifest);
-      const r = await host.spawn(o.hostId, o.key, { state: o.snap.state, fromSchema: o.snap.schema });
-      host.setTransform(o.hostId, L.item.pos, L.item.rotY || 0);
-      Object.assign(L, { hostId: o.hostId, key: o.key, version: o.version, broken: !r.ok });
-      L.item.version = o.version;
+    const back = [];
+    try {
+      for (const k of new Set(w.olds.map((o) => o.key))) await host.load(k, pkgs.get(k).code, pkgs.get(k).manifest);
+      for (const o of w.olds) {
+        const L = live.get(o.itemId);
+        if (!L) continue;
+        // 先把舊版建回來（藏著），全部好了再同一格換
+        const r = await host.spawn(o.hostId, o.key, { state: o.snap.state, fromSchema: o.snap.schema, rng: o.snap.rng });
+        const g = groupOf(o.hostId);
+        if (g) g.visible = false;
+        host.setTransform(o.hostId, L.item.pos, L.item.rotY || 0);
+        back.push({ L, o, ok: r.ok, error: r.error });
+      }
+      for (const { L, o, ok } of back) {
+        host.kill(L.hostId);
+        const g = groupOf(o.hostId);
+        if (g) g.visible = true;
+        Object.assign(L, { hostId: o.hostId, key: o.key, version: o.version, name: o.name, broken: !ok });
+        L.item.version = o.version;
+      }
+    } finally {
+      txn = false;
     }
-    host.unload(w.newKey);
+    if (![...live.values()].some((L) => L.key === w.newKey)) host.unload(w.newKey);
     // 診斷回到同一個工作：同一位創作者的 connector 會再修，修好會自動再換一次
     if (w.job?.id)
       api('POST', `/api/create/${w.job.id}/runtime-fail`, { message: why }).then(() => {
@@ -555,7 +609,8 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
           pollJobs();
         }
       }, () => {});
-    setJobText(`v${w.version} 換上後出錯（${why}），已退回 v${w.olds[0]?.version} 和換版當下的狀態`, { warn: true });
+    setJobText(`v${w.version} 換上後出錯（${why}），${back.length} 個都已退回 v${w.olds[0]?.version} 和換版當下的狀態`, { warn: true });
+    renderHud();
     saveWorld();
   }
   function finishWatches(now) {
@@ -700,6 +755,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   const local = new THREE.Vector3();
   function update(dt) {
     if (!host || !world || busy) return;
+    if (txn) return; // 換版交易中：整層暫停步進（狀態不會在拿存檔與切換之間變動）
     acc = Math.min(acc + dt, 0.25);
     const now = performance.now();
     while (acc >= TICK) {
