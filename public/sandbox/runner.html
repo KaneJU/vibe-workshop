@@ -1,0 +1,831 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>Vibe 工坊 · 作品沙盒</title>
+</head>
+<body>
+<script>
+// 創作世界的作品沙盒（見 docs/creation-sdk.md）。這頁跑在 <iframe sandbox="allow-scripts"> 裡：不同源（origin 是 "null"），
+// 讀不到父頁、cookie、localStorage；伺服器回應帶 CSP（connect-src 'none'、沒有 unsafe-eval，只放行這段程式的雜湊和 blob Worker），
+// 見 server.mjs 的 serveSandboxRunner。
+//
+// 這頁只做兩件事：轉送、看門。
+// - 作品程式一律在 classic blob Worker 裡跑（iframe 主執行緒卡住會連父頁一起凍住；module blob Worker 在不同源的 iframe 起不來）。
+//   每個作品版本（pkgKey，例如 lin_x@3）一個 Worker，同一版本的實例共用。
+// - Worker 回來的東西一律當不可信資料：必須是 ArrayBuffer（JSON 位元組，先看大小再解析）、必須回應目前在等的那個請求、
+//   只轉送屬於那個 Worker 的實例、格式不對的欄位丟掉；送出不認得的訊息就把整個 Worker 停掉。
+// - 看門狗：每個 Worker 同時最多一個 tick 在途；請求超過時限沒回就 terminate() 那個 Worker，通知父頁 { type: 'timeout', pkg, insts }。
+//   除了計時器，父頁每送一則訊息進來也會順便檢查一次（計時器在隱藏的 iframe 裡可能被瀏覽器放慢）。
+// 注意：這段程式裡不能出現 script 結束標籤或 HTML 註解開頭的字樣（伺服器用 regex 切出內容算 CSP 雜湊，HTML 解析也會出錯）。
+(function () {
+  'use strict';
+
+  // ---------------- 限制 ----------------
+  const TICK_MS = 300; // 每一步：超過就整個 Worker 停掉
+  const BUDGET_MS = { hello: 3000, spawn: 1000, event: 300, snapshot: 300, kill: 300 };
+  const RUN_MS_PER_STEP = 30; // 影子試跑：每多一步多給的時間
+  const MAX_REPLY_BYTES = 4 * 1024 * 1024; // Worker 一則回覆（JSON 位元組）上限
+  const MAX_CODE = 512 * 1024; // 作品程式（字元）上限
+  const MAX_QUEUE = 512; // 每個 Worker 最多幾個請求在排隊
+  const MAX_SNAPSHOT = 65536; // 存檔上限（位元組；這裡先用字元數粗篩，父頁再算準）
+  const KEY_RE = /^[A-Za-z0-9_.:@~-]{1,80}$/; // pkgKey、實例 id
+
+  // ---------------- Worker 的前置程式 ----------------
+  // 這個函式不會在這頁執行：它的原始碼（Function.prototype.toString，不需要 eval）被放在每個 Worker 程式的最前面，
+  // 後面接著包在 (function (vibe) { 'use strict'; … })(api) 裡的作品程式。所以裡面只能用自己的東西，不能引用這頁的變數；
+  // 作品程式在另一個函式裡，看不到這裡的區域變數。
+  function workerPrelude(scope, lineOffset) {
+    'use strict';
+    // ---- 1. 先抓住之後要用的內建函式：作品程式之後再怎麼改全域、改原型，這裡呼叫的都是原本那一份 ----
+    const O = Object;
+    const apply = Reflect.apply;
+    const defineProperty = O.defineProperty;
+    const getPrototypeOf = O.getPrototypeOf;
+    const describe = O.getOwnPropertyDescriptor;
+    const freeze = O.freeze;
+    const hasOwnFn = O.prototype.hasOwnProperty;
+    const isArray = Array.isArray;
+    const ArrayCtor = Array;
+    const toStr = String;
+    const stringify = JSON.stringify;
+    const imul = Math.imul;
+    const min = Math.min;
+    const sliceFn = String.prototype.slice;
+    const charCodeFn = String.prototype.charCodeAt;
+    const execFn = RegExp.prototype.exec;
+    const encoder = new TextEncoder();
+    const encodeFn = TextEncoder.prototype.encode;
+    const typedProto = getPrototypeOf(Uint8Array.prototype);
+    const bufferOfFn = describe(typedProto, 'buffer').get;
+    const byteLengthFn = describe(typedProto, 'byteLength').get;
+    const dataOfFn = describe(MessageEvent.prototype, 'data').get;
+    const post = scope.postMessage.bind(scope); // 只有這裡拿得到真正的 postMessage
+    const listen = scope.addEventListener.bind(scope);
+    const hasOwn = (o, k) => apply(hasOwnFn, o, [k]);
+    const slice = (s, a, b) => apply(sliceFn, s, [a, b]);
+    const encode = (s) => apply(encodeFn, encoder, [s]);
+
+    // ---- 2. 拿掉連網、計時器、儲存、再開 Worker、做出可載入程式的東西（多一層保險；真正的邊界是 CSP 和不同源）----
+    const BLOCKED = [
+      'fetch', 'XMLHttpRequest', 'WebSocket', 'WebSocketStream', 'EventSource', 'WebTransport', 'importScripts',
+      'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame',
+      'indexedDB', 'caches', 'cookieStore', 'navigator', 'Worker', 'SharedWorker', 'BroadcastChannel', 'MessageChannel',
+      'postMessage', 'close', 'OffscreenCanvas', 'createImageBitmap', 'WebAssembly', 'FileReaderSync', 'Notification',
+    ];
+    for (let i = 0; i < BLOCKED.length; i += 1) {
+      const name = BLOCKED[i];
+      for (let o = scope; o !== null; o = getPrototypeOf(o)) {
+        if (!hasOwn(o, name)) continue;
+        try {
+          defineProperty(o, name, { value: undefined, writable: false, enumerable: false, configurable: false });
+        } catch (err) {
+          try { o[name] = undefined; } catch (err2) { /* 擋不掉就算了：CSP 還在 */ }
+        }
+      }
+    }
+    try {
+      defineProperty(URL, 'createObjectURL', { value: undefined, writable: false, enumerable: false, configurable: false });
+    } catch (err) { /* 同上 */ }
+
+    // ---- 3. 每個實例自己的種子亂數（mulberry32；狀態可以存檔接續）----
+    function hash32(s) {
+      let h = 2166136261;
+      for (let i = 0; i < s.length; i += 1) {
+        h ^= apply(charCodeFn, s, [i]);
+        h = imul(h, 16777619);
+      }
+      return h >>> 0;
+    }
+    function makeRng(seed) {
+      let a = seed >>> 0;
+      return {
+        next() {
+          a = (a + 0x6d2b79f5) | 0;
+          let t = imul(a ^ (a >>> 15), 1 | a);
+          t = (t + imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        },
+        state() {
+          return a >>> 0;
+        },
+      };
+    }
+
+    // ---- 4. 作品定義（vibe.define）與實例 ----
+    let def = null;
+    let fns = null;
+    let bootError = '';
+    let booted = false;
+    let cfg = { stateSchema: 1, entities: 300 };
+    const insts = O.create(null); // 實例 id → { state, rng, broken, hidden }
+    let current = null; // 正在跑哪個實例的函式（vibe.random 用它的亂數）
+    const fallbackRng = makeRng(0x9e3779b9);
+
+    function define(spec) {
+      if (booted) return;
+      if (fns) {
+        bootError = bootError || 'vibe.define() 只能呼叫一次';
+        return;
+      }
+      if (spec === null || typeof spec !== 'object') {
+        bootError = bootError || 'vibe.define() 要傳入一個物件';
+        return;
+      }
+      const pick = (k) => {
+        const f = spec[k];
+        return typeof f === 'function' ? f : null;
+      };
+      const f = {
+        init: pick('init'), tick: pick('tick'), view: pick('view'), hud: pick('hud'), onEvent: pick('onEvent'),
+        migrate: pick('migrate'), snapshot: pick('snapshot'), dispose: pick('dispose'),
+      };
+      const missing = !f.init ? 'init' : !f.tick ? 'tick' : !f.view ? 'view' : '';
+      if (missing) {
+        bootError = bootError || `vibe.define() 少了 ${missing}()`;
+        return;
+      }
+      def = spec;
+      fns = f;
+    }
+    function random() {
+      return (current ? current.rng : fallbackRng).next();
+    }
+
+    // ---- 5. 把作品交出來的東西整理成純資料（只挑認得的欄位、限制長度；真正的檢查在父頁）----
+    const num = (x) => (typeof x === 'number' ? x : x === undefined ? undefined : null);
+    const str = (x, max) => (typeof x === 'string' ? (x.length > max ? slice(x, 0, max) : x) : x === undefined ? undefined : null);
+    function vec(x) {
+      if (x === undefined) return undefined;
+      if (typeof x === 'number') return [x];
+      if (!isArray(x)) return null;
+      const n = x.length;
+      if (n >= 3) return [num(x[0]), num(x[1]), num(x[2])];
+      if (n === 2) return [num(x[0]), num(x[1])];
+      if (n === 1) return [num(x[0])];
+      return [];
+    }
+    function pickEntity(e) {
+      if (e === null || typeof e !== 'object') return null;
+      return {
+        id: str(e.id, 100), shape: str(e.shape, 16), pos: vec(e.pos), rot: vec(e.rot), size: vec(e.size),
+        color: str(e.color, 16), emissive: str(e.emissive, 16), opacity: num(e.opacity), text: str(e.text, 120),
+      };
+    }
+    function viewOf(rec) {
+      const raw = apply(fns.view, def, [rec.state]);
+      if (!isArray(raw)) return { view: null, total: -1 };
+      const len = raw.length;
+      const total = typeof len === 'number' && len > 0 ? len : 0;
+      const n = min(total, cfg.entities);
+      const out = new ArrayCtor(n);
+      for (let i = 0; i < n; i += 1) out[i] = pickEntity(raw[i]);
+      return { view: out, total };
+    }
+    function line(x) {
+      if (typeof x === 'string') return x.length > 120 ? slice(x, 0, 120) : x;
+      if (typeof x === 'number' || typeof x === 'boolean') return toStr(x);
+      return '';
+    }
+    function hudOf(rec) {
+      if (!fns.hud) return null;
+      const raw = apply(fns.hud, def, [rec.state]);
+      if (typeof raw === 'string') return [line(raw)];
+      if (!isArray(raw)) return [];
+      const len = raw.length;
+      const n = typeof len === 'number' && len > 0 ? min(len, 4) : 0;
+      const out = new ArrayCtor(n);
+      for (let i = 0; i < n; i += 1) out[i] = line(raw[i]);
+      return out;
+    }
+    // 錯誤訊息：名稱＋訊息，找得到的話附上 main.js 的行號（扣掉前置程式的行數）
+    const LINE_RE = /blob:[^\s)]*:(\d+):\d+/g;
+    function lineOf(stack) {
+      if (typeof stack !== 'string') return 0;
+      LINE_RE.lastIndex = 0;
+      for (let k = 0; k < 30; k += 1) {
+        const m = apply(execFn, LINE_RE, [stack]);
+        if (!m) return 0;
+        const n = +m[1] - lineOffset;
+        if (n > 0) return n;
+      }
+      return 0;
+    }
+    function errText(err) {
+      let s;
+      try {
+        if (err !== null && typeof err === 'object') {
+          const name = err.name;
+          const message = err.message;
+          s = (typeof name === 'string' ? name : 'Error') + ': ' + (typeof message === 'string' ? message : '');
+          const at = lineOf(err.stack);
+          if (at) s += `（main.js 第 ${at} 行）`;
+        } else if (typeof err === 'string') {
+          s = err;
+        } else {
+          s = '作品丟出了 ' + typeof err;
+        }
+      } catch (x) {
+        s = '作品丟出了讀不到的錯誤';
+      }
+      return slice(s, 0, 300);
+    }
+    function snapshotJson(rec) {
+      const data = fns.snapshot ? apply(fns.snapshot, def, [rec.state]) : rec.state;
+      const json = stringify(data);
+      if (typeof json !== 'string') return { error: '存檔不能是 undefined 或函式' };
+      const bytes = apply(byteLengthFn, encode(json), []);
+      if (bytes > 65536) return { error: `存檔 ${bytes} 位元組，超過上限 65536（64 KB）`, bytes };
+      return { json, bytes };
+    }
+
+    // ---- 6. 指令：每個請求剛好回一次，回覆一律是 JSON 位元組（runner 先看大小再解析）----
+    function send(msg) {
+      let bytes;
+      try {
+        bytes = encode(stringify(msg));
+      } catch (err) {
+        bytes = encode(stringify({ id: msg.id, ok: false, error: '回覆無法轉成 JSON：' + errText(err) }));
+      }
+      const buf = apply(bufferOfFn, bytes, []);
+      try {
+        post(buf, [buf]);
+      } catch (err) {
+        post(buf);
+      }
+    }
+    function hello(m) {
+      booted = true;
+      const c = m.cfg || {};
+      cfg = { stateSchema: c.stateSchema, entities: c.entities };
+      if (bootError) return { ok: false, error: bootError };
+      if (!fns) return { ok: false, error: '作品沒有呼叫 vibe.define({ init, tick, view, … })' };
+      return { ok: true };
+    }
+    function spawn(m) {
+      if (insts[m.inst]) return { ok: false, error: '實例已存在' };
+      const seed = m.params && m.params.seed;
+      const rec = {
+        state: undefined,
+        rng: typeof m.rng === 'number' ? makeRng(m.rng) : makeRng(hash32(seed !== undefined && seed !== null ? toStr(seed) : m.inst)),
+        broken: false,
+        hidden: !!m.hidden,
+      };
+      current = rec;
+      try {
+        let state = m.state;
+        if (m.hasState) {
+          // 存檔格式版本不同、而且作品有 migrate 才轉換；否則沿用
+          if (fns.migrate && typeof m.fromSchema === 'number' && m.fromSchema !== cfg.stateSchema) {
+            const r = apply(fns.migrate, def, [state, m.fromSchema]);
+            if (r !== undefined) state = r;
+          }
+        } else {
+          state = apply(fns.init, def, [m.params]);
+          if (state === undefined) return { ok: false, error: 'init() 要回傳這個實例的狀態' };
+        }
+        rec.state = state;
+        const v = viewOf(rec);
+        const h = hudOf(rec);
+        insts[m.inst] = rec;
+        return { ok: true, view: rec.hidden ? null : v.view, total: v.total, hud: rec.hidden ? null : h };
+      } catch (err) {
+        return { ok: false, error: errText(err) };
+      } finally {
+        current = null;
+      }
+    }
+    function tick(m) {
+      const frames = m.frames;
+      const out = [];
+      let k = 0;
+      for (let i = 0; i < frames.length; i += 1) {
+        const f = frames[i];
+        const rec = insts[f[0]];
+        if (!rec || rec.broken || rec.hidden) continue;
+        current = rec;
+        try {
+          const r = apply(fns.tick, def, [rec.state, m.dt, f[1]]);
+          if (r !== undefined) rec.state = r;
+          const v = viewOf(rec);
+          out[k] = [f[0], { view: v.view, total: v.total, hud: hudOf(rec) }];
+        } catch (err) {
+          rec.broken = true; // 這個實例停在這裡；同一個 Worker 的其他實例照常
+          out[k] = [f[0], { error: errText(err) }];
+        }
+        k += 1;
+        current = null;
+      }
+      return { ok: true, out };
+    }
+    function onEvent(m) {
+      const rec = insts[m.inst];
+      if (!rec || rec.broken) return { ok: false, error: '實例不存在或已經出錯' };
+      if (!fns.onEvent) return { ok: true };
+      current = rec;
+      try {
+        const r = apply(fns.onEvent, def, [rec.state, m.ev]);
+        if (r !== undefined) rec.state = r;
+        return { ok: true };
+      } catch (err) {
+        rec.broken = true;
+        return { ok: false, broken: true, error: errText(err) };
+      } finally {
+        current = null;
+      }
+    }
+    function snapshot(m) {
+      const rec = insts[m.inst];
+      if (!rec) return { ok: false, error: '沒有這個實例' };
+      if (rec.broken) return { ok: false, error: '這個實例已經出錯停止' };
+      current = rec;
+      try {
+        const s = snapshotJson(rec);
+        if (s.error) return { ok: false, error: s.error };
+        return { ok: true, json: s.json, bytes: s.bytes, rng: rec.rng.state() };
+      } catch (err) {
+        return { ok: false, error: '存檔失敗：' + errText(err) };
+      } finally {
+        current = null;
+      }
+    }
+    function kill(m) {
+      const rec = insts[m.inst];
+      if (!rec) return { ok: true };
+      delete insts[m.inst];
+      if (fns.dispose) {
+        current = rec;
+        try {
+          apply(fns.dispose, def, [rec.state]);
+        } catch (err) {
+          /* 要移除了，出錯也不管 */
+        }
+        current = null;
+      }
+      return { ok: true };
+    }
+    // 影子試跑：連跑 n 步（tick → view → hud），最後確認存檔做得出來、不超過 64 KB
+    function run(m) {
+      const rec = insts[m.inst];
+      if (!rec || rec.broken) return { ok: false, error: '實例不存在或已經出錯' };
+      const base = m.input;
+      let steps = 0;
+      let maxEntities = 0;
+      let last = { view: null, total: 0 };
+      let hud = null;
+      current = rec;
+      try {
+        for (let k = 0; k < m.n; k += 1) {
+          const input = {
+            t: m.t0 + (k + 1) * m.dt,
+            keys: { left: base.keys.left, right: base.keys.right, up: base.keys.up, down: base.keys.down, action: base.keys.action },
+            player: { x: base.player.x, y: base.player.y, z: base.player.z },
+          };
+          const r = apply(fns.tick, def, [rec.state, m.dt, input]);
+          if (r !== undefined) rec.state = r;
+          last = viewOf(rec);
+          hud = hudOf(rec);
+          if (last.total > maxEntities) maxEntities = last.total;
+          steps += 1;
+        }
+        const s = snapshotJson(rec);
+        if (s.error) return { ok: false, error: s.error, steps, maxEntities, snapshotBytes: s.bytes || 0 };
+        return { ok: true, steps, maxEntities, snapshotBytes: s.bytes, view: last.view, total: last.total, hud };
+      } catch (err) {
+        rec.broken = true;
+        return { ok: false, broken: true, error: errText(err), steps, maxEntities };
+      } finally {
+        current = null;
+      }
+    }
+    function handle(m) {
+      switch (m.op) {
+        case 'hello': return hello(m);
+        case 'spawn': return spawn(m);
+        case 'tick': return tick(m);
+        case 'event': return onEvent(m);
+        case 'snapshot': return snapshot(m);
+        case 'kill': return kill(m);
+        case 'run': return run(m);
+        default: return { ok: false, error: '不認得的指令' };
+      }
+    }
+    // 只聽真的從 runner 來的訊息（作品自己 dispatchEvent 做出來的假訊息 isTrusted 是 false）
+    listen('message', (e) => {
+      if (!e.isTrusted) return;
+      let m;
+      try {
+        m = apply(dataOfFn, e, []);
+      } catch (err) {
+        return;
+      }
+      if (m === null || typeof m !== 'object') return;
+      const id = m.id;
+      let res;
+      try {
+        res = handle(m);
+      } catch (err) {
+        current = null;
+        res = { ok: false, error: '沙盒錯誤：' + errText(err) };
+      }
+      send({ ...res, id });
+    }, true);
+    // 作品程式最外層丟出的例外：記下來（載入失敗的原因），不讓它冒到 runner；之後的非同步例外直接吞掉
+    listen('error', (e) => {
+      if (!booted) {
+        let msg = '';
+        let at = 0;
+        try {
+          msg = typeof e.message === 'string' ? e.message : '';
+          at = typeof e.lineno === 'number' ? e.lineno - lineOffset : 0;
+        } catch (x) {
+          msg = '';
+        }
+        bootError = bootError || ('作品程式最外層出錯：' + slice(msg, 0, 240) + (at > 0 ? `（main.js 第 ${at} 行）` : ''));
+      }
+      e.preventDefault();
+    });
+    listen('unhandledrejection', (e) => e.preventDefault());
+
+    return freeze({ define, random });
+  }
+
+  // Worker 原始碼＝前置程式＋包起來的作品程式；行號偏移用來把錯誤行號換回 main.js 的行號
+  const PRE_HEAD = 'const api = (' + String(workerPrelude) + ')(self, ';
+  const PRE_TAIL = ');\n';
+  const LINE_OFFSET = (PRE_HEAD + PRE_TAIL).split('\n').length; // 作品第 1 行＝Worker 第 LINE_OFFSET + 1 行
+  const PRELUDE = PRE_HEAD + LINE_OFFSET + PRE_TAIL;
+  const WRAP_HEAD = "(function (vibe) { 'use strict';\n";
+  const WRAP_TAIL = '\n})(api);\n';
+
+  // ---------------- 小工具 ----------------
+  const decoder = new TextDecoder();
+  const validKey = (k) => typeof k === 'string' && KEY_RE.test(k);
+  const clip = (s, n) => (typeof s === 'string' ? s.slice(0, n) : '');
+  const errMsg = (err) => clip(String((err && err.message) || err), 200);
+  const int = (x) => (Number.isFinite(x) ? Math.trunc(x) : 0);
+  function cfgOf(man) {
+    const m = man && typeof man === 'object' ? man : {};
+    const stateSchema = Number.isInteger(m.stateSchema) && m.stateSchema >= 1 ? m.stateSchema : 1;
+    const entities = Number.isInteger(m.entities) ? Math.max(1, Math.min(300, m.entities)) : 120; // 沒給就跟伺服器影子試跑一樣用 120
+    return { stateSchema, entities };
+  }
+
+  // Worker 交回來的資料：只留認得的欄位、限制長度（語意上的檢查——形狀白名單、座標範圍、顏色格式…——在父頁做）
+  const str = (x, max) => (typeof x === 'string' ? x.slice(0, max) : x === undefined ? undefined : null);
+  const num = (x) => (typeof x === 'number' ? x : x === undefined ? undefined : null);
+  function vec(x) {
+    if (x === undefined) return undefined;
+    if (typeof x === 'number') return [x];
+    if (!Array.isArray(x)) return null;
+    return x.slice(0, 3).map((v) => (typeof v === 'number' ? v : null));
+  }
+  function cleanEntity(e) {
+    if (!e || typeof e !== 'object' || Array.isArray(e)) return null;
+    return {
+      id: str(e.id, 100), shape: str(e.shape, 16), pos: vec(e.pos), rot: vec(e.rot), size: vec(e.size),
+      color: str(e.color, 16), emissive: str(e.emissive, 16), opacity: num(e.opacity), text: str(e.text, 120),
+    };
+  }
+  function cleanView(v) {
+    if (!Array.isArray(v)) return null;
+    return v.slice(0, 300).map(cleanEntity);
+  }
+  function cleanHud(h) {
+    if (h === null || h === undefined) return null;
+    if (!Array.isArray(h)) return [];
+    return h.slice(0, 4).map((s) => (typeof s === 'string' ? s.slice(0, 120) : ''));
+  }
+  function cleanTotal(t) {
+    return typeof t === 'number' && Number.isFinite(t) ? Math.max(-1, Math.min(1e9, Math.trunc(t))) : 0;
+  }
+
+  // ---------------- 和父頁之間 ----------------
+  let port = null;
+  let genSeq = 0; // 每建一個 Worker 加一：父頁用它分辨通知是不是來自「現在這一個」Worker（同一個 pkgKey 可能重新載入過）
+  const workers = new Map(); // pkgKey → { pkg, worker, insts: Map(實例 id → { hidden, live }), queue, timer, seq, ready, dead, tickBusy, waiters }
+
+  function send(msg) {
+    if (port) port.postMessage(msg);
+  }
+  function reply(rid, payload) {
+    if (Number.isInteger(rid) && rid > 0) send({ type: 'reply', rid, ...payload });
+  }
+
+  // 只接受父頁送來的第一個帶 MessagePort 的 init；之後所有指令都走那個 port
+  window.addEventListener('message', (e) => {
+    if (port || e.source !== window.parent || e.source === window) return;
+    const d = e.data;
+    if (!d || d.type !== 'init' || !e.ports || e.ports.length !== 1) return;
+    port = e.ports[0];
+    port.onmessage = (ev) => {
+      expireOverdue();
+      try {
+        command(ev.data);
+      } catch (err) {
+        /* 指令格式不對：丟掉 */
+      }
+    };
+    port.postMessage({ type: 'hello' });
+  });
+
+  function command(d) {
+    if (!d || typeof d !== 'object') return;
+    switch (d.op) {
+      case 'load': return load(d);
+      case 'unload': return unload(d);
+      case 'tick': return tick(d);
+      case 'spawn':
+      case 'event':
+      case 'snapshot':
+      case 'kill':
+      case 'run':
+        return instOp(d);
+      default:
+        return reply(d.rid, { ok: false, error: '不認得的指令' });
+    }
+  }
+
+  // ---------------- 每個 Worker 的請求佇列與看門狗 ----------------
+  // Worker 依序處理、依序回覆：回覆一定要對上佇列最前面那個請求的 id。時限從「輪到它」開始算。
+  function request(rec, msg, budget, done) {
+    // 排了這麼多還沒處理完＝作品跟不上，跟逾時一樣整個停掉（正常不會發生：最前面那個早就逾時了）
+    if (!rec.dead && rec.queue.length >= MAX_QUEUE) stop(rec, 'timeout', '作品累積太多沒處理的請求，已停止');
+    if (rec.dead) {
+      done(null);
+      return;
+    }
+    rec.seq += 1;
+    const id = rec.seq;
+    rec.queue.push({ id, budget, done, deadline: 0 });
+    if (rec.queue.length === 1) arm(rec);
+    try {
+      rec.worker.postMessage({ ...msg, id });
+    } catch (err) {
+      stop(rec, 'crash', '傳資料給作品失敗：' + errMsg(err));
+    }
+  }
+  function arm(rec) {
+    clearTimeout(rec.timer);
+    const head = rec.queue[0];
+    if (!head || rec.dead) return;
+    head.deadline = performance.now() + head.budget;
+    rec.timer = setTimeout(() => overdue(rec), head.budget + 2);
+  }
+  function overdue(rec) {
+    const head = rec.queue[0];
+    if (!head || rec.dead) return;
+    const left = head.deadline - performance.now();
+    if (left > 0) {
+      rec.timer = setTimeout(() => overdue(rec), left + 2);
+      return;
+    }
+    if (!rec.ready) return finishLoad(rec, false, '作品程式載入逾時（最外層的程式跑太久或卡住）');
+    stop(rec, 'timeout', `作品 ${head.budget} ms 內沒有回應（可能是無限迴圈或一步算太久），已停止`);
+  }
+  function expireOverdue() {
+    const now = performance.now();
+    for (const rec of [...workers.values()]) {
+      const head = rec.queue[0];
+      if (head && head.deadline && now >= head.deadline) overdue(rec);
+    }
+  }
+  function terminate(rec) {
+    rec.dead = true;
+    clearTimeout(rec.timer);
+    try {
+      rec.worker.terminate();
+    } catch (err) {
+      /* 已經停了 */
+    }
+    if (workers.get(rec.pkg) === rec) workers.delete(rec.pkg);
+  }
+  // 還在等的請求全部當失敗（各自回覆父頁）
+  function flush(rec) {
+    const q = rec.queue;
+    rec.queue = [];
+    for (const item of q) {
+      try {
+        item.done(null);
+      } catch (err) {
+        /* 不影響其他 */
+      }
+    }
+  }
+  // 執行中的 Worker 出事（逾時、亂送訊息）：整個停掉，通知父頁哪些實例跟著停了
+  function stop(rec, type, error) {
+    if (rec.dead) return;
+    if (!rec.ready) return finishLoad(rec, false, error);
+    terminate(rec);
+    send({ type, pkg: rec.pkg, gen: rec.gen, insts: [...rec.insts.keys()], error });
+    flush(rec);
+  }
+  function finishLoad(rec, ok, error) {
+    if (rec.loadDone) return;
+    rec.loadDone = true;
+    if (ok && !rec.dead) {
+      rec.ready = true;
+    } else if (!rec.dead) {
+      terminate(rec);
+      flush(rec);
+    }
+    const waiters = rec.waiters;
+    rec.waiters = [];
+    for (const rid of waiters) reply(rid, rec.ready ? { ok: true, gen: rec.gen } : { ok: false, error: error || '作品載入失敗' });
+  }
+
+  // Worker 送來的東西：先檢查型別和大小才解析；對不上目前在等的請求就整個停掉
+  function fromWorker(rec, data) {
+    if (rec.dead) return;
+    if (!(data instanceof ArrayBuffer) || data.byteLength > MAX_REPLY_BYTES) {
+      stop(rec, 'crash', '作品送出格式不對或太大的訊息，已停止');
+      return;
+    }
+    let msg = null;
+    try {
+      msg = JSON.parse(decoder.decode(data));
+    } catch (err) {
+      msg = null;
+    }
+    const head = rec.queue[0];
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg) || !head || msg.id !== head.id) {
+      stop(rec, 'crash', '作品送出不認得的訊息，已停止');
+      return;
+    }
+    rec.queue.shift();
+    arm(rec);
+    head.done(msg);
+  }
+
+  // ---------------- 指令 ----------------
+  function load(d) {
+    const key = d.pkg;
+    if (!validKey(key)) return reply(d.rid, { ok: false, error: '作品版本代號格式不對' });
+    if (typeof d.code !== 'string' || d.code.length > MAX_CODE) return reply(d.rid, { ok: false, error: '作品程式格式不對或太大' });
+    const have = workers.get(key);
+    if (have) {
+      // 同一版本只建一次 Worker
+      if (have.ready) return reply(d.rid, { ok: true, gen: have.gen });
+      have.waiters.push(d.rid);
+      return;
+    }
+    genSeq += 1;
+    const rec = { pkg: key, gen: genSeq, worker: null, insts: new Map(), queue: [], timer: 0, seq: 0, ready: false, dead: false, loadDone: false, tickBusy: false, waiters: [d.rid] };
+    let url = '';
+    try {
+      url = URL.createObjectURL(new Blob([PRELUDE + WRAP_HEAD + d.code + WRAP_TAIL], { type: 'text/javascript' }));
+      rec.worker = new Worker(url);
+    } catch (err) {
+      return reply(d.rid, { ok: false, error: '建立 Worker 失敗：' + errMsg(err) });
+    } finally {
+      if (url) URL.revokeObjectURL(url);
+    }
+    workers.set(key, rec);
+    rec.worker.onmessage = (e) => fromWorker(rec, e.data);
+    rec.worker.onmessageerror = () => stop(rec, 'crash', '作品送出無法讀取的訊息，已停止');
+    // 前置程式會攔下作品自己的例外；會走到這裡的通常是語法錯誤（整個程式沒辦法執行）
+    rec.worker.onerror = (e) => {
+      e.preventDefault();
+      const at = typeof e.lineno === 'number' ? e.lineno - LINE_OFFSET : 0;
+      stop(rec, 'crash', '作品程式無法執行：' + (clip(e.message, 240) || '語法錯誤') + (at > 0 ? `（main.js 第 ${at} 行）` : ''));
+    };
+    request(rec, { op: 'hello', cfg: cfgOf(d.manifest) }, BUDGET_MS.hello, (res) => {
+      if (!res) return finishLoad(rec, false, '作品程式載入失敗');
+      if (res.ok !== true) return finishLoad(rec, false, clip(res.error, 400) || '作品載入失敗');
+      finishLoad(rec, true, '');
+    });
+  }
+
+  function unload(d) {
+    const rec = workers.get(d.pkg);
+    if (rec) {
+      if (!rec.ready) {
+        finishLoad(rec, false, '已取消載入');
+      } else {
+        terminate(rec);
+        flush(rec);
+      }
+    }
+    reply(d.rid, { ok: true });
+  }
+
+  // 一則 tick 訊息帶好幾個作品版本的批次；每個 Worker 同時最多一個 tick 在途（還在跑的就這一步跳過）
+  function tick(d) {
+    const batches = Array.isArray(d.batches) ? d.batches : [];
+    for (const b of batches) {
+      if (!b || typeof b !== 'object') continue;
+      const rec = workers.get(b.pkg);
+      const seq = b.seq;
+      if (!rec || !rec.ready || rec.dead || rec.tickBusy) {
+        send({ type: 'tick', pkg: b.pkg, seq, out: [], skipped: true });
+        continue;
+      }
+      const frames = [];
+      for (const f of Array.isArray(b.frames) ? b.frames : []) {
+        if (!Array.isArray(f)) continue;
+        const info = rec.insts.get(f[0]);
+        if (info && info.live && !info.hidden) frames.push([f[0], f[1]]);
+      }
+      rec.tickBusy = true;
+      request(rec, { op: 'tick', dt: Number.isFinite(b.dt) ? b.dt : 0, frames }, TICK_MS, (res) => {
+        rec.tickBusy = false;
+        if (!res) return; // Worker 已經停了：父頁會收到 timeout／crash
+        send({ type: 'tick', pkg: rec.pkg, seq, out: cleanOut(rec, res.out) });
+      });
+    }
+  }
+  // 只轉送屬於這個 Worker、而且還活著的實例；同一個實例只收第一筆
+  function cleanOut(rec, out) {
+    const res = [];
+    if (!Array.isArray(out)) return res;
+    const seen = new Set();
+    for (const pair of out) {
+      if (!Array.isArray(pair) || pair.length !== 2) continue;
+      const inst = pair[0];
+      const r = pair[1];
+      const info = rec.insts.get(inst);
+      if (!info || !info.live || info.hidden || seen.has(inst) || !r || typeof r !== 'object') continue;
+      seen.add(inst);
+      if (typeof r.error === 'string') res.push([inst, { error: clip(r.error, 400) }]);
+      else res.push([inst, { view: cleanView(r.view), total: cleanTotal(r.total), hud: cleanHud(r.hud) }]);
+    }
+    return res;
+  }
+
+  function instOp(d) {
+    const rec = workers.get(d.pkg);
+    if (!rec || !rec.ready || rec.dead) return reply(d.rid, { ok: false, error: '作品版本沒有載入（或已經停止）' });
+    const inst = d.inst;
+    if (!validKey(inst)) return reply(d.rid, { ok: false, error: '實例 id 格式不對' });
+    const info = rec.insts.get(inst);
+    const gone = '作品沒有回應，已停止';
+    switch (d.op) {
+      case 'spawn': {
+        if (info) return reply(d.rid, { ok: false, error: '這個實例已經在這個作品版本裡' });
+        const entry = { hidden: !!d.hidden, live: false };
+        rec.insts.set(inst, entry);
+        const msg = {
+          op: 'spawn', inst, hidden: entry.hidden, hasState: !!d.hasState, state: d.hasState ? d.state : null,
+          fromSchema: Number.isInteger(d.fromSchema) ? d.fromSchema : null,
+          params: d.params && typeof d.params === 'object' ? d.params : {},
+          rng: Number.isInteger(d.rng) ? d.rng >>> 0 : null,
+        };
+        return request(rec, msg, BUDGET_MS.spawn, (res) => {
+          if (!res || res.ok !== true) {
+            if (rec.insts.get(inst) === entry) rec.insts.delete(inst);
+            return reply(d.rid, { ok: false, error: res ? clip(res.error, 400) || '建立實例失敗' : gone });
+          }
+          if (rec.insts.get(inst) !== entry) return reply(d.rid, { ok: false, error: '實例已經被移除' });
+          entry.live = true;
+          reply(d.rid, { ok: true, view: entry.hidden ? null : cleanView(res.view), total: cleanTotal(res.total), hud: entry.hidden ? null : cleanHud(res.hud) });
+        });
+      }
+      case 'kill': {
+        if (!info) return reply(d.rid, { ok: true });
+        rec.insts.delete(inst);
+        return request(rec, { op: 'kill', inst }, BUDGET_MS.kill, () => reply(d.rid, { ok: true }));
+      }
+      case 'event': {
+        if (!info || !info.live) return reply(d.rid, { ok: false, error: '沒有這個實例' });
+        return request(rec, { op: 'event', inst, ev: d.ev && typeof d.ev === 'object' ? d.ev : {} }, BUDGET_MS.event, (res) => {
+          reply(d.rid, res ? { ok: res.ok === true, broken: res.broken === true, error: clip(res.error, 400) } : { ok: false, error: gone });
+        });
+      }
+      case 'snapshot': {
+        if (!info || !info.live) return reply(d.rid, { ok: false, error: '沒有這個實例' });
+        return request(rec, { op: 'snapshot', inst }, BUDGET_MS.snapshot, (res) => {
+          if (!res) return reply(d.rid, { ok: false, error: gone });
+          if (res.ok !== true) return reply(d.rid, { ok: false, error: clip(res.error, 400) || '存檔失敗' });
+          if (typeof res.json !== 'string' || res.json.length > MAX_SNAPSHOT) return reply(d.rid, { ok: false, error: '存檔太大或格式不對' });
+          reply(d.rid, { ok: true, json: res.json, rng: Number.isInteger(res.rng) ? res.rng >>> 0 : null });
+        });
+      }
+      case 'run': {
+        if (!info || !info.live) return reply(d.rid, { ok: false, error: '沒有這個實例' });
+        const n = Number.isInteger(d.n) ? Math.max(1, Math.min(600, d.n)) : 30;
+        const k = d.input && typeof d.input === 'object' ? d.input : {};
+        const keys = k.keys && typeof k.keys === 'object' ? k.keys : {};
+        const pl = k.player && typeof k.player === 'object' ? k.player : {};
+        const fin = (x) => (Number.isFinite(x) ? x : 0);
+        const input = {
+          keys: { left: !!keys.left, right: !!keys.right, up: !!keys.up, down: !!keys.down, action: !!keys.action },
+          player: { x: fin(pl.x), y: fin(pl.y), z: fin(pl.z) },
+        };
+        const msg = { op: 'run', inst, n, dt: Number.isFinite(d.dt) ? d.dt : 1 / 30, t0: fin(d.t0), input };
+        return request(rec, msg, TICK_MS + n * RUN_MS_PER_STEP, (res) => {
+          if (!res) return reply(d.rid, { ok: false, error: '作品試跑逾時（可能是無限迴圈或一步算太久），已停止' });
+          reply(d.rid, {
+            ok: res.ok === true, broken: res.broken === true, error: clip(res.error, 400),
+            steps: int(res.steps), maxEntities: int(res.maxEntities), snapshotBytes: int(res.snapshotBytes),
+            view: cleanView(res.view), total: cleanTotal(res.total), hud: cleanHud(res.hud),
+          });
+        });
+      }
+      default:
+        return reply(d.rid, { ok: false, error: '不認得的指令' });
+    }
+  }
+})();
+</script>
+</body>
+</html>

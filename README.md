@@ -190,6 +190,17 @@ Easter egg: wear something named "Infinity Gauntlet" (無限手套) and press �
 
 Requests from the computer itself never need the key. Requests from other devices need it, and anything that isn't a private network address is rejected.
 
+## Creation worlds: your own Codex, worlds inside worlds
+
+"🌀 創作世界" on the home page (`/?create`): say or type what you want to play, and **your own Codex** builds it as a package placed in the current world; select it and say "change this to…" to swap in a new version. Every level can open a child world — walk through the portal and keep creating there — and things made deep down can be brought back up and placed again.
+
+- **Generation is separate from running**: the game server never calls Codex. You run `connector/vibe-connector.mjs` on your own computer (`pair` once), which uses your own logged-in Codex CLI and sends the package back; the server never sees your Codex login, and without a connector a request just waits — it never falls back to the server owner's Codex. See [connector/README.md](connector/README.md).
+- **Packages**: `manifest.json` + `main.js` (`vibe.define({ init, tick, view, hud, onEvent, migrate, … })`), immutable versions numbered by the server. Spec: [docs/creation-sdk.md](docs/creation-sdk.md).
+- **Isolation**: the server shadow-runs every package in a zero-permission Deno sandbox (no file, network, env or subprocess access; CPU, memory and time limits) and sends diagnostics back to your Codex when it fails; the browser runs packages in Workers inside a `sandbox` iframe (opaque origin, CSP blocks network and eval), and the page only receives "what to draw" data.
+- **Hot swap without reload**: a new version is first shadow-run on the old version's current snapshot (including `migrate`), then swapped in on the same frame with score and state kept; if it fails within 3 s it rolls back to the old version and the state at swap time, and the broken version is flagged.
+- **Lazy nesting**: only the current level runs; entering a child world saves and stops the current one, returning restores it from the save. There is no fixed depth limit (resource limits: 200 items per world, 2000 worlds per creator).
+- **Voice**: uses the browser's speech recognition (the same code as the workshop 🎙); the world, selection and target version are captured when you start speaking, partial results are only shown, and each utterance is sent once. In headset mode, tap the screen to talk and pinch an item to click it. Browser speech recognition may not run on-device; nothing extra is recorded or stored here.
+
 ## Phone headset mode (cardboard viewer)
 
 "👓 眼鏡" in the free workshop's top bar: slide the phone sideways into a Cardboard-style viewer, sit, turn your head to look at your creations, and hold your hand in front of the phone's rear camera — open your hand, point, pinch thumb and index to grab, open your fingers to let go. It's the same world and the same physics as the workshop, and moved things are saved as usual.
@@ -248,6 +259,7 @@ npm run test:photo       # 📷 from an iPhone on the LAN: shrunk, location data
 npm run test:examples    # every example in fabricator/examples passes the real validator (no server needed)
 npm run test:headset     # headset mode: stereo and head turning, gesture state machine (synthetic), fake camera + real model inference, safe drop on tracking loss, save and reopen (starts its own 127.0.0.1 server)
 npm run test:flash       # how big muzzle/impact flashes get on screen (no server; tests/flash-probe.mjs measures inside a real game room)
+npm run test:creation    # creation worlds: server protocol (two isolated fixture creators, Deno shadow runs), browser sandbox, end-to-end (hot swap, rollback, A→B→C, deep chain, synthetic speech events); each starts its own 127.0.0.1 server and never calls Codex
 
 # Tutorial and game rooms: run each against its own throwaway data folder on 127.0.0.1 (CODEX_BIN points nowhere on purpose)
 DATA_DIR=/tmp/vw-adv-data PORT=5312 HOST=127.0.0.1 CODEX_BIN=/nonexistent/codex npm start &
@@ -294,6 +306,14 @@ public/handworker.mjs   runs MediaPipe in a worker (no outside connections)
 public/hands.mjs        21 landmarks → pinch, position, distance; grab state machine (hysteresis, debounce, arming, loss)
 public/headsethud.mjs   in-headset UI: status panels, gaze buttons, hand skeleton and ray
 public/legal.html       license and third-party notices
+public/creation.mjs     creation worlds: worlds and portals, item instances, swap/rollback, voice, connector pairing
+public/sandbox-host.mjs  package sandbox (parent page): iframe + Worker management, draws the entity data packages return
+public/sandbox/runner.html  package sandbox (inside the iframe): one Worker per package version, watchdog
+public/voice.mjs        speech input shared by the workshop and creation worlds
+server/creation.mjs     creation API: creators, connector pairing and jobs, package intake, versions, worlds
+server/shadow-harness.js  zero-permission Deno shadow-run harness
+connector/              the creator-side connector (uses your own Codex) and the spec it gives Codex
+docs/creation-sdk.md    package SDK and protocol
 scripts/fetch-models.mjs  downloads and verifies the hand model
 public/index.html       page and help text
 examples/starter/       demo parts and scene loaded on first start
@@ -317,7 +337,8 @@ tests/                  Playwright tests (desktop and phone)
 - Rooms live in the server's memory: restarting the server closes open rooms (the games themselves are saved).
 - One game type so far (target shooting with a blaster); the editor sets its tool, targets and win rule. Hits are decided by the shooter's device and checked for plausibility by the server — fine among friends, not cheat-proof.
 - The tutorial and game rooms are not available inside VR yet.
-- Phone headset mode is workshop-only and hasn't been tried on a real iPhone or real cardboard lenses yet (optical fusion, comfort and heat are unverified); automated tests feed test pictures through Chromium's fake camera, not an iPhone rear camera. iPhones need https for camera and motion sensors, which the current LAN http entry doesn't provide.
+- Creation worlds need a computer running the connector (your own Codex) for now — an iPhone alone can't do it — and the server needs Deno for shadow runs. Packages can only draw basic shapes and text and receive clicks and direction keys (no physics or sound yet). The server can't prove which Codex account built a package (provenance is the connector's own report). Two real Codex accounts side by side have only been checked with an isolated protocol test.
+- Phone headset mode works in the workshop and creation worlds and hasn't been tried on a real iPhone or real cardboard lenses yet (optical fusion, comfort and heat are unverified); automated tests feed test pictures through Chromium's fake camera, not an iPhone rear camera. iPhones need https for camera and motion sensors, which the current LAN http entry doesn't provide.
 
 ## License
 

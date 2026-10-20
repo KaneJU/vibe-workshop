@@ -13,11 +13,14 @@ import { createArena } from './arena.mjs';
 import { createSfx } from './sfx.mjs';
 import { createQuality } from './quality.mjs';
 import { createHeadset } from './headset.mjs';
+import { createVoice } from './voice.mjs';
 
 const $ = (sel) => document.querySelector(sel);
 // 四種畫面：首頁（/）、新手教學（/?play）、遊戲房（/?games、/?edit=、/?room=）、自由工坊（/?ws；舊網址帶 physics、safe 參數的也直接進工坊）
 const params = new URLSearchParams(window.location.search);
-const MODE = params.has('play')
+const MODE = params.has('create')
+  ? 'create'
+  : params.has('play')
   ? 'play'
   : params.has('games') || params.has('edit') || params.has('room')
     ? 'game'
@@ -28,6 +31,7 @@ document.body.classList.add(`mode-${MODE}`);
 let adventure = null;
 let titleScene = null;
 let game = null;
+let creation = null; // 創作世界（/?create）
 // 每種畫面能寫的 API：首頁不寫、教學只寫教學存檔、遊戲房只寫遊戲與房間；自由工坊的場景、工具箱、世界模組只有工坊能動
 const WRITABLE = { title: /^$/, play: /^\/api\/adventure$/, game: /^\/api\/(games|rooms)(\/|$)/ };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1574,41 +1578,19 @@ function spawnFromLibrary(partId) {
 }
 
 // ---------------- 語音 ----------------
+// 跟創作世界共用 voice.mjs（同一套 SpeechRecognition 用法）；工坊這裡說完一句就交給「打造」
 
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let recog = null;
-if (!SR || !window.isSecureContext) {
+const voice = createVoice({
+  onPartial: (u, text) => ($('#prompt').value = text),
+  onState: (s) => $('#micBtn').classList.toggle('on', s === 'listening'),
+  onFinal: (u, text) => submitPrompt(text),
+  onError: (code, msg) => msg && toast(msg),
+});
+if (!voice.supported) {
   $('#micBtn').hidden = true;
   $('#prompt').placeholder = '打字，或用鍵盤上的 🎙 聽寫…';
 }
-$('#micBtn').onclick = () => {
-  if (recog) {
-    recog.stop();
-    return;
-  }
-  recog = new SR();
-  recog.lang = 'zh-TW';
-  recog.interimResults = true;
-  recog.continuous = false;
-  let finalText = '';
-  recog.onresult = (ev) => {
-    let interim = '';
-    for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
-      const r = ev.results[i];
-      if (r.isFinal) finalText += r[0].transcript;
-      else interim += r[0].transcript;
-    }
-    $('#prompt').value = finalText + interim;
-  };
-  recog.onerror = (ev) => toast(`語音辨識：${ev.error}`);
-  recog.onend = () => {
-    $('#micBtn').classList.remove('on');
-    recog = null;
-    if (finalText.trim()) submitPrompt(finalText);
-  };
-  recog.start();
-  $('#micBtn').classList.add('on');
-};
+$('#micBtn').onclick = () => (voice.listening ? voice.stop() : voice.start());
 
 // ---------------- 照片：從相簿挑一張，叫 Codex 照著做 ----------------
 
@@ -1783,12 +1765,13 @@ const headset = createHeadset({
     raycaster.ray.origin.copy(origin);
     raycaster.ray.direction.copy(dir);
     raycaster.camera = camera;
+    if (creation) return creation.pickRay(raycaster); // 創作世界：指到的是沙盒裡作品的實體
     return pickFromRaycaster();
   },
   hooks: {
     toast: (m) => toast(m),
     canEnter() {
-      if (MODE !== 'workshop') return '眼鏡模式目前只在自由工坊';
+      if (MODE !== 'workshop' && MODE !== 'create') return '眼鏡模式目前只在自由工坊與創作世界';
       if (engine.active) return '先離開操作模式（開車／飛行／穿戴）再戴眼鏡';
       if (renderer.xr.isPresenting) return 'VR 裡不能開眼鏡模式';
       return true;
@@ -1819,7 +1802,11 @@ const headset = createHeadset({
       selectOnly(inst.id);
     },
     afterRelease: () => scheduleSave(),
-    nameOf: (inst) => partName(inst.partId),
+    nameOf: (inst) => inst.name || partName(inst.partId),
+    // 創作世界：捏＝點那個實體（作品自己決定要做什麼）；點一下螢幕＝開始／結束說話（要使用者手勢才能開麥克風）
+    onPinch: (hover) => creation?.pinch(hover) ?? false,
+    onTap: () => (creation ? (creation.toggleVoice(), true) : false),
+    extraLines: () => creation?.headsetLines() ?? null,
   },
 });
 const hsBtn = $('#hsBtn');
@@ -2203,6 +2190,7 @@ renderer.setAnimationLoop(() => {
   tools.update(dt); // 道具（能量槍）：要在 engine.update 之前，才讀得到這一格按下的 ⚡
   engine.update(dt);
   headset.update(dt); // 眼鏡模式：頭 → 鏡頭、手 → 抓放（在物理之前；世界、物理照樣每格只更新一次）
+  creation?.update(dt); // 創作世界：作品在沙盒裡一步一步跑
   adventure?.update(dt, t); // 在物理之前：吸附、救援搬動的東西這一格就讓物理跟過去
   game?.update(dt, t);
   if (titleScene) {
@@ -2287,6 +2275,7 @@ $('#titleGames').onclick = () => (window.location.href = '/?games');
 $('#titlePlay').onclick = () => (window.location.href = $('#titlePlay').dataset.fresh ? '/?play&new' : '/?play');
 $('#titleRestart').onclick = () => (window.location.href = '/?play&new');
 $('#titleFree').onclick = () => (window.location.href = '/?ws');
+$('#titleCreate').onclick = () => (window.location.href = '/?create');
 
 // 冒險：只用內建零件，進度和場景存在 adventure.json；物理一定開著，世界模組一律不載入
 async function initPlay() {
@@ -2376,8 +2365,25 @@ async function initGame() {
   }
 }
 
+// 創作世界：說需求 → 你自己的 Codex → 沙盒裡執行；世界可以一層一層往下開（見 creation.mjs、docs/creation-sdk.md）
+async function initCreate() {
+  envAdapter.pad(false);
+  $('#status').textContent = '創作世界';
+  hsBtn.hidden = false;
+  try {
+    const { createCreation } = await import('./creation.mjs');
+    creation = createCreation({ THREE, scene, camera, controls, renderer, toast: (m, ms) => toast(m, ms), isTouch });
+    loaded = true;
+    await creation.init();
+  } catch (e) {
+    console.error(e);
+    toast(`⚠️ 創作世界載入失敗：${e.message}`, 8000);
+  }
+}
+
 async function init() {
   camera.getWorldPosition(player.position);
+  if (MODE === 'create') return initCreate();
   if (MODE === 'title') return initTitle();
   if (MODE === 'play') return initPlay();
   if (MODE === 'game') return initGame();
@@ -2460,6 +2466,9 @@ window.__ws = {
   },
   get game() {
     return game ? game.state() : null;
+  },
+  get creation() {
+    return creation;
   },
   get shots() {
     return tools.count;

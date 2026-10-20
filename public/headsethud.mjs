@@ -105,6 +105,9 @@ export function createHud({ THREE, camera, scene }) {
   // 說明（鏡頭打不開、沒有動作感測…）：最多三行，字才不會為了擠成一行縮到看不見
   const help = panel({ width: 1.1, height: 0.27 }, 0, 0.2);
   help.mesh.visible = false;
+  // 額外狀態（創作世界：聽到的話、做到哪裡），兩行
+  const extra = panel({ width: 1.2, height: 0.16 }, 0, -0.2);
+  extra.mesh.visible = false;
   const diag = panel({ width: 0.62, height: 0.62, ppm: 380, align: 'left' }, -0.8, 0.05);
   diag.mesh.visible = false;
 
@@ -211,6 +214,12 @@ export function createHud({ THREE, camera, scene }) {
     },
     setCamera(text, warn = false) {
       camState.set(text, { color: warn ? '#ffd166' : '#9fb8c8', border: warn ? 'rgba(255,209,102,0.6)' : 'rgba(56,225,255,0.3)' });
+    },
+    setExtra(lines) {
+      const list = (lines || []).filter(Boolean).slice(0, 2);
+      if (!list.length) return extra.set('');
+      while (list.length < 2) list.push('');
+      extra.set(list, { color: '#e8fff0', border: 'rgba(157,255,92,0.55)' });
     },
     setHelp(lines) {
       if (!lines?.length) {

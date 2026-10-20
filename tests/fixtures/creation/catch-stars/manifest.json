@@ -1,0 +1,9 @@
+{
+  "format": "vibe-pkg/1",
+  "name": "接星星",
+  "description": "左右方向鍵或點選地板移動籃子，金色星星加 3 分、其他加 1 分，漏掉 3 顆就結束，按空白鍵或點再玩一次重來。",
+  "stateSchema": 1,
+  "budgets": {
+    "entities": 80
+  }
+}

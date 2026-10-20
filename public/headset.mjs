@@ -104,6 +104,9 @@ export function createHeadset({ THREE, renderer, scene, camera, controls, phys, 
     canEnter: () => true, // 回傳字串＝不能進來的原因
     onEnter: () => {},
     onExit: () => {},
+    onPinch: () => false, // 回傳 true＝外面處理了這次捏
+    onTap: () => false, // 回傳 true＝外面處理了這次點螢幕
+    extraLines: () => null, // HUD 下方的額外狀態（例如語音、創作進度）
     beforeGrab: () => {}, // 抓之前（記復原點、選取）
     afterRelease: () => {}, // 放下之後（存檔）
     nameOf: () => '東西',
@@ -251,6 +254,11 @@ export function createHeadset({ THREE, renderer, scene, camera, controls, phys, 
       gesture.markGrab(false);
       return;
     }
+    // 創作世界：捏＝點那個東西（作品自己決定怎麼反應），不抓物理
+    if (h.onPinch(hover)) {
+      gesture.markGrab(false);
+      return;
+    }
     if (!phys.ready) {
       gesture.markGrab(false);
       note('物理還在準備，等一下再抓');
@@ -352,6 +360,7 @@ export function createHeadset({ THREE, renderer, scene, camera, controls, phys, 
     touch = null;
     if (moved) return;
     if (held > 1200) return exit('long-press');
+    if (h.onTap()) return; // 點螢幕是使用者手勢：創作世界拿來開始／結束說話
     if (tracker.state === 'error') tracker.start(trackerOpts());
     else calibUntil = calibUntil > now() ? 0 : now() + CALIB_MS;
   }
@@ -516,6 +525,7 @@ export function createHeadset({ THREE, renderer, scene, camera, controls, phys, 
     const ct = cameraText();
     hud.setCamera(ct.text, ct.warn);
     hud.setHelp(ct.help);
+    hud.setExtra(h.extraLines());
     if (handOn) {
       const to = holding ? null : hover ? hover.point : rayEnd.copy(pinchWorld).addScaledVector(dirWorld, 3);
       hud.setHand(points, st.hand, pinchWorld, to);

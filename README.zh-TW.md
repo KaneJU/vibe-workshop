@@ -188,6 +188,17 @@ npm start
 
 在電腦本機開不需要通行碼。其他裝置都要通行碼，而且不是私人網段的位址一律擋掉。
 
+## 創作世界：用你自己的 Codex，世界裡再開世界
+
+首頁的「🌀 創作世界」（`/?create`）：說出或打出想玩的東西，**用你自己的 Codex** 做成作品，放進目前這一層世界；選取作品再說「把這個改成…」就換新版。每一層都能「開一個子世界」，走進傳送門在裡面繼續創作，做好的作品也能帶回上一層再放。
+
+- **生成和執行分開**：遊戲伺服器不叫 Codex。你在自己電腦執行 `connector/vibe-connector.mjs`（第一次先 `pair` 配對），它用你自己已登入的 Codex CLI 生成作品包送回來；伺服器拿不到你的 Codex 登入，沒連接時需求只會排隊，不會改用伺服器主人的 Codex。說明見 [connector/README.md](connector/README.md)。
+- **作品包**：`manifest.json`＋`main.js`（`vibe.define({ init, tick, view, hud, onEvent, migrate, … })`），版本由伺服器編號、不可變。規格見 [docs/creation-sdk.md](docs/creation-sdk.md)。
+- **隔離**：伺服器先在 Deno 零權限沙盒裡影子試跑（讀寫檔、網路、環境變數、子程序都被擋，CPU／記憶體／時間有上限），沒過就把診斷送回你的 Codex 修；瀏覽器在 `sandbox` iframe（不同源、CSP 禁止連網與 eval）裡的 Worker 執行作品，頁面只收「要畫什麼」的資料。
+- **換版不重新整理**：新版先拿舊版目前的存檔在影子實例試跑（含 `migrate`），通過才在同一格換上、分數與狀態保留；換上後 3 秒內出錯就退回舊版和切換當下的狀態，壞掉的版本會被標記，不再拿來放。
+- **一層一層往下開**：只有目前這一層在執行；進入子世界前先存檔、停掉這層，返回時從存檔恢復，沒有固定的層數上限（有每層 200 個作品、每人 2000 個世界的資源上限）。
+- **語音**：沿用瀏覽器的語音辨識（跟工坊的 🎙 同一套）；開口那一刻就記下「哪一層、選了誰、要改哪一版」，中間結果只顯示、說完只送一次。眼鏡模式裡點一下螢幕開始說話、捏住作品＝點它。瀏覽器的語音辨識不一定在本機處理；這裡不另外錄音或存音檔。
+
 ## 手機眼鏡模式（紙盒頭戴）
 
 自由工坊右上角的「👓 眼鏡」：把手機橫放進紙盒眼鏡（Cardboard 一類），坐著轉頭看自己的作品，手伸到手機背面的鏡頭前——張開手、指向東西、拇指捏食指就抓起來，張開手指放下。抓的是工坊裡同一批作品、同一套物理，放下後照常存檔。
@@ -246,6 +257,7 @@ npm run test:photo       # iPhone 從區網按 📷：照片縮小、拿掉拍�
 npm run test:examples    # fabricator/examples 裡每個範例都要通過真的驗收（不用開伺服器）
 npm run test:headset     # 眼鏡模式：雙眼與轉頭、手勢狀態機（合成）、假鏡頭＋真模型推論、追丟安全放下、存檔重開（自己開 127.0.0.1 的伺服器）
 npm run test:flash       # 開火閃光在畫面上的大小（不用開伺服器；tests/flash-probe.mjs 在真的遊戲房裡量）
+npm run test:creation    # 創作世界：伺服器協定（兩位隔離 fixture 創作者、Deno 影子試跑）、瀏覽器沙盒、端到端（換版、退回、A→B→C、深鏈、語音合成事件）；都自己開 127.0.0.1 的伺服器，不叫 Codex
 
 # 新手教學與遊戲房：各用一個丟棄式資料夾、只聽 127.0.0.1（CODEX_BIN 故意指到不存在的地方）
 DATA_DIR=/tmp/vw-adv-data PORT=5312 HOST=127.0.0.1 CODEX_BIN=/nonexistent/codex npm start &
@@ -292,6 +304,14 @@ public/handworker.mjs   在 worker 裡跑 MediaPipe（不連外）
 public/hands.mjs        21 個關鍵點 → 捏合、位置、遠近；抓放狀態機（遲滯、防抖、上膛、追丟）
 public/headsethud.mjs   頭戴介面：狀態板、視線按鈕、手的骨架與射線
 public/legal.html       授權與第三方聲明
+public/creation.mjs     創作世界：世界與傳送門、作品實例、換版／退回、語音、連接 connector
+public/sandbox-host.mjs  作品沙盒（父頁）：iframe＋Worker 的管理、把作品交出的實體資料畫成 three.js
+public/sandbox/runner.html  作品沙盒（iframe 裡）：每個作品版本一個 Worker、看門狗
+public/voice.mjs        語音輸入（工坊與創作世界共用）
+server/creation.mjs     創作世界 API：創作者、connector 配對與工作、作品包驗收、版本、世界
+server/shadow-harness.js  Deno 零權限的影子試跑外殼
+connector/              創作者在自己電腦跑的 connector（用自己的 Codex）與給 Codex 的規格書
+docs/creation-sdk.md    作品包 SDK 與協定
 scripts/fetch-models.mjs  下載並核對手勢模型
 public/index.html       頁面與操作說明
 examples/starter/       第一次啟動時載入的示範零件與場景
@@ -315,7 +335,8 @@ tests/                  Playwright 測試（電腦版與手機版）
 - 房間在伺服器的記憶體裡：伺服器重新啟動，開著的房間就關了（遊戲本身有存）。
 - 目前只有一種遊戲（拿能量槍射靶），編輯器可以改道具、標靶和勝負規則。有沒有打中由開槍那台判斷，伺服器只檢查合不合理——朋友之間玩沒問題，但防不了作弊。
 - 新手教學和遊戲房還不能在 VR 裡玩。
-- 手機眼鏡模式只在自由工坊，還沒在真的 iPhone、紙盒鏡片上測過（光學融合、舒適度、發熱都待驗）；自動測試用的是 Chromium 的假鏡頭播放測試圖片，不是 iPhone 後鏡頭。iPhone 要 https 才開得了鏡頭和動作感測，目前的區網 http 入口不行。
+- 創作世界第一版要有一台電腦跑 connector（用你自己的 Codex），iPhone 不能單獨完成；伺服器端影子試跑需要安裝 Deno。作品目前只能畫基本形狀與文字、收點擊與方向鍵，還不能用物理或聲音；伺服器無法證明作品真的是用哪個 Codex 帳號做的（來源是 connector 自述）。兩個真的 Codex 帳號互不干擾目前只用隔離的協定測試驗過。
+- 手機眼鏡模式只在自由工坊與創作世界，還沒在真的 iPhone、紙盒鏡片上測過（光學融合、舒適度、發熱都待驗）；自動測試用的是 Chromium 的假鏡頭播放測試圖片，不是 iPhone 後鏡頭。iPhone 要 https 才開得了鏡頭和動作感測，目前的區網 http 入口不行。
 
 ## 授權
 
