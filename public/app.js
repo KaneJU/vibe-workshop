@@ -9,6 +9,8 @@ import { createPhysics, PHYS } from './physics.mjs';
 import { createAdventure, buildTitleScene, ADVENTURE_PARTS } from './adventure.mjs';
 import { createTools, findTool, normalizeTarget } from './tools.mjs';
 import { createGame } from './game.mjs';
+import { createArena } from './arena.mjs';
+import { createSfx } from './sfx.mjs';
 
 const $ = (sel) => document.querySelector(sel);
 // 四種畫面：首頁（/）、新手教學（/?play）、遊戲房（/?games、/?edit=、/?room=）、自由工坊（/?ws；舊網址帶 physics、safe 參數的也直接進工坊）
@@ -227,14 +229,19 @@ const phys = createPhysics({
 
 // 道具行為（能量槍會射、標靶會被打中）：零件在 meta.json 宣告 tool／target，拿在手上（穿戴）按 ⚡ 就會射。
 // 工坊裡打中東西會把它推開、打中標靶會計分；遊戲房裡打中標靶交給伺服器算分。
+const sfx = createSfx();
 const tools = createTools({
   THREE,
   scene,
   camera,
   engine,
+  sfx,
   partOf: (id) => runtime.parts.get(id),
   hittables: () => toolTargets(),
-  onFire: (s) => game?.onFire(s),
+  onFire: (s) => {
+    engine.kick(1);
+    game?.onFire(s);
+  },
   onHit: (h) => onToolHit(h),
 });
 function toolTargets() {
@@ -249,6 +256,9 @@ let toolScore = 0;
 function onToolHit(h) {
   if (MODE === 'game') return game?.onHit(h);
   if (!h.inst) return;
+  const ch = $('#crosshair');
+  ch.classList.add('hit');
+  setTimeout(() => ch.classList.remove('hit'), 180);
   if (phys.ready) phys.apiFor('tools').push({ id: h.inst.id }, h.dir.map((v) => v * 3)); // 打中就推一下
   if (h.kind === 'target') {
     toolScore += normalizeTarget(runtime.parts.get(h.inst.partId)?.target)?.points || 1;
@@ -322,7 +332,9 @@ const partKind = (id) => runtime.parts.get(id)?.kind;
 async function loadModule(id) {
   if (runtime.modules.has(id)) return true;
   try {
-    runtime.registerModule(id, await import(`/parts/${id}.js`));
+    // 內建零件改版時網址帶版本號（零件程式快取一年，不換網址的話舊的會一直留著）
+    const rev = runtime.parts.get(id)?.builtinRev;
+    runtime.registerModule(id, await import(`/parts/${id}.js${Number.isFinite(rev) ? `?v=${rev}` : ''}`));
     return true;
   } catch (e) {
     console.error(e);
@@ -1781,7 +1793,7 @@ function startControl(inst, mode, { remember = false } = {}) {
   closeDrawers();
   clearSelection();
   $('#prompt').blur();
-  engine.start(inst, mode, part);
+  engine.start(inst, mode, part, { tool: mode === 'wear' ? findTool(inst.partId, (id) => runtime.parts.get(id)) : null });
   document.body.classList.add('controlling');
   $('#ctlHud').hidden = false;
   const n = glueMembers(inst).length;
@@ -2082,8 +2094,47 @@ window.addEventListener('resize', () => {
 
 let lastT = now();
 let lastWorldSave = 0;
+// 自動畫質（首頁、遊戲房）：連續 2 秒每格超過 40 ms，就降低解析度（2 → 1.5 → 1），再不夠就關影子；
+// 順順跑 6 秒再一步步升回去。慢的手機也能玩，快的裝置看到完整畫質
+const quality = { max: Math.min(window.devicePixelRatio, 2), pr: Math.min(window.devicePixelRatio, 2), slow: 0, fast: 0, shadows: true, steps: 0 };
+// 固定最高畫質（只給前後對照拍照用：localStorage vw_quality=max）
+const pinQuality = (() => {
+  try {
+    return localStorage.getItem('vw_quality') === 'max';
+  } catch {
+    return false;
+  }
+})();
+function adaptQuality(rawDt) {
+  if ((MODE !== 'game' && MODE !== 'title') || pinQuality) return;
+  if (rawDt > 0.04) {
+    quality.slow += Math.min(rawDt, 0.25);
+    quality.fast = 0;
+  } else if (rawDt < 0.022) {
+    quality.fast += rawDt;
+    quality.slow = Math.max(0, quality.slow - rawDt);
+  }
+  if (quality.slow > 2) {
+    quality.slow = 0;
+    if (quality.pr > 1) {
+      quality.pr = Math.max(1, quality.pr - 0.5);
+      renderer.setPixelRatio(quality.pr);
+      quality.steps += 1;
+    } else if (quality.shadows) {
+      quality.shadows = false;
+      renderer.shadowMap.enabled = false;
+      scene.traverse((o) => o.material && (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => (m.needsUpdate = true)));
+      quality.steps += 1;
+    }
+  } else if (quality.fast > 6 && quality.pr < quality.max) {
+    quality.fast = 0;
+    quality.pr = Math.min(quality.max, quality.pr + 0.5);
+    renderer.setPixelRatio(quality.pr);
+  }
+}
 renderer.setAnimationLoop(() => {
   const t = now();
+  adaptQuality(t - lastT);
   const dt = Math.min(t - lastT, 0.1);
   lastT = t;
   camera.getWorldPosition(player.position);
@@ -2162,6 +2213,7 @@ async function initTitle() {
     runtime.setLibrary(library);
     await loadPartsFor([...ADVENTURE_PARTS, 'c_mvfwneiy081798']);
     titleScene = buildTitleScene({ THREE, scene, runtime });
+    createArena({ THREE, scene, renderer, env: envAdapter, sun, hemi, isTouch }).setKind('ring'); // 首頁背景也是訓練場
     const p = adv.adventure?.progress;
     const names = ['點亮能量塔', '組裝探險車', '開到信號塔'];
     if (p && p.level <= 3 && !(p.level === 1 && p.step === 'intro')) {
@@ -2249,6 +2301,10 @@ async function initGame() {
       camera,
       controls,
       renderer,
+      envAdapter,
+      sun,
+      hemi,
+      sfx,
       runtime,
       engine,
       tools,
@@ -2359,6 +2415,12 @@ window.__ws = {
   },
   get shotsFired() {
     return tools.fired;
+  },
+  get fxPool() {
+    return tools.pooled;
+  },
+  get quality() {
+    return { ...quality };
   },
   screenOf(id, where = 'center') {
     const b = worldBox(instances.get(id));

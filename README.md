@@ -108,6 +108,8 @@ The home page (`/`) has three doors: 🎮 **Game rooms** (`/?games`), the **tuto
 
 How it works: a game is plain settings in `data/games.json` (never code — the server does not run anything a player sends). Rooms live in the server's memory: it decides the countdown, the clock, where targets stand and the score, and pushes the state to every player with Server-Sent Events. The player who fires decides the hit; the server checks it is plausible (the game is on, the target is up, not faster than the blaster can fire) before scoring. Tutorial progress is in `data/adventure.json`. Game rooms and the tutorial can only write their own files — never the workshop scene, toolbox or world modules.
 
+**Look and feel.** Game rooms (and the home page) take place in an indoor training range instead of a black void: a gradient sky, a concrete floor with lanes and 5/10/15 m markings, a back wall and side walls (players stay inside them), overhead trusses and lamps, one shadowed key light and soft contact shadows under targets and players. The blaster is held like a hand gun (grip bottom right, barrel pointing at the crosshair, a little sway when walking and a kick when firing); a composite that contains a tool is scaled by its tool, so the gun stays readable. Shots flash at the muzzle; hits show sparks, a shock ring and a ✕ on the crosshair; the target falls back when the server confirms and a +1 floats up; friends are helmeted characters that walk, aim and recoil. Short synthesized sounds play only after you press something; 🔊 mutes them on that device. Effects reuse pooled resources, and if a device is slow (frames over 40 ms for 2 s) the resolution steps down and then shadows switch off. Built-in parts carry a `builtinRev`; an upgraded built-in (like the blaster) replaces only that part's code and thumbnail in an existing workshop and is loaded with `?v=` so browsers don't keep the old one.
+
 A part becomes a tool or a target with `"tool": { "kind": "blaster", … }` or `"target": { "points": 1 }` in `meta.json` (see [`fabricator/AGENTS.md`](fabricator/AGENTS.md)); a composite that contains a tool is a tool too. Hold it with ▶ 操作 anywhere in the workshop: shots push whatever they hit and targets count points.
 
 ## Change the world: environments and rules
@@ -242,6 +244,10 @@ DATA_DIR=/tmp/vw-room-data PORT=5313 HOST=127.0.0.1 CODEX_BIN=/nonexistent/codex
 BASE=http://127.0.0.1:5313 npm run test:rooms    # two players over HTTP + SSE: same countdown, targets, score and results; rule change; reconnect; room isolation
 BASE=http://127.0.0.1:5313 DATA_DIR=/tmp/vw-room-data npm run test:coplay   # a phone and a desktop browser: make a game, join, shoot, shared results, change rules, play again, leave, reopen
 BASE=http://127.0.0.1:5313 npm run test:tools    # the blaster in the free workshop: aim, hit a target, push it, hold to keep firing
+npm run test:builtin-refresh   # upgrading an existing workshop replaces only the revised built-in part; player-made parts and the scene stay the same
+SERVER_ROOT=. OUT=tests/out/visual npm run visual          # same-view screenshots (phone and desktop, fixed room code and targets) + frame times; GPU=1 uses the Mac's GPU
+SERVER_ROOT=. VIEW=m node tests/perf-scene.mjs             # frame cost of one game scene on the GPU with no frame cap (compare two checkouts)
+SERVER_ROOT=. node tests/record.mjs                         # records a phone and a desktop clip: walk, aim, fire, hit
 WITH_CODEX=1 npm run bench   # fixed prompts (SET=hard: drive, fly, wear, devices, rules): success, time, validator rounds, a snapshot, and a try-out of every result with today's validator and ⚡ (uses Codex quota)
 WITH_CODEX=1 npm test    # also runs a real build and modification (uses Codex quota)
 ```

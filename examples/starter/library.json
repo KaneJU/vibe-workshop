@@ -580,9 +580,9 @@
       "kind": "generated",
       "description": "拿在右手的能量槍：按 ⚡（電腦按空白鍵）從槍口射出發光能量彈，打中標靶會計分、打中東西會把它推開。",
       "size": [
-        0.06,
-        0.18,
-        0.318
+        0.078,
+        0.217,
+        0.375
       ],
       "placement": "front",
       "controls": "wear",
@@ -601,15 +601,16 @@
         "spread": 0
       },
       "stats": {
-        "meshes": 15,
-        "triangles": 1836,
+        "meshes": 49,
+        "triangles": 2654,
         "lights": 0,
         "updaters": 1,
         "spawns": 1
       },
       "basedOn": null,
       "createdAt": "2026-10-20T06:00:00.000Z",
-      "thumb": true
+      "thumb": true,
+      "builtinRev": 2
     },
     {
       "id": "p_vwtarget01",

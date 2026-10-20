@@ -370,4 +370,34 @@ body.mode-game .ctl-top { top: calc(10px + env(safe-area-inset-top)); }
 body.mode-game .ctl-round.big { width: 96px; height: 96px; font-size: 38px; }
 .g-sheet .g-btns { position: sticky; bottom: -14px; margin: 4px -14px -14px; padding: 10px 14px calc(12px + env(safe-area-inset-bottom)); background: rgba(6, 14, 26, 0.97); border-top: 1px solid var(--line); }
 .g-sheet { padding-bottom: 14px; }
-#gameHud .g-reset { position: fixed; right: calc(16px + env(safe-area-inset-right)); bottom: calc(150px + env(safe-area-inset-bottom)); pointer-events: auto; }
+#gameHud .g-reset { position: fixed; left: calc(16px + env(safe-area-inset-left)); bottom: calc(190px + env(safe-area-inset-bottom)); pointer-events: auto; }
+/* 外觀與手感（Ju38551）：遊戲中 HUD 收成一列；準星命中標記；得分飄字；音效開關 */
+body.mode-game .ctl-top { display: none; }
+.g-top { top: calc(10px + env(safe-area-inset-top)); align-items: center; }
+.g-tool { font-size: 13px; font-weight: 700; background: var(--glass); border: 1px solid var(--line); border-radius: 999px; padding: 6px 10px; white-space: nowrap; max-width: 30vw; overflow: hidden; text-overflow: ellipsis; }
+.g-goal { top: calc(62px + env(safe-area-inset-top)); }
+body.mode-game #toasts { top: calc(88px + env(safe-area-inset-top)); }
+.g-ico { pointer-events: auto; width: 44px; height: 44px; padding: 0; border-radius: 12px; font-size: 18px; background: var(--glass); flex: 0 0 auto; }
+#crosshair::before { content: ''; position: absolute; inset: -9px; opacity: 0; transition: opacity 0.06s;
+  background:
+    linear-gradient(45deg, transparent 46%, #fff 46%, #fff 54%, transparent 54%) center / 100% 100% no-repeat,
+    linear-gradient(-45deg, transparent 46%, #fff 46%, #fff 54%, transparent 54%) center / 100% 100% no-repeat;
+  -webkit-mask: radial-gradient(circle, transparent 40%, #000 41%); mask: radial-gradient(circle, transparent 40%, #000 41%); }
+#crosshair.hit::before { opacity: 1; }
+#crosshair.hit { border-color: #9dff5c; }
+#hitPops { position: fixed; inset: 0; pointer-events: none; z-index: 9; }
+.hit-pop { position: absolute; transform: translate(-50%, -50%); font-weight: 800; font-size: 26px; color: #ffd166; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.7); animation: hitPop 0.8s ease-out forwards; }
+@keyframes hitPop { 0% { opacity: 0; transform: translate(-50%, -30%) scale(0.7); } 15% { opacity: 1; transform: translate(-50%, -60%) scale(1.15); } 100% { opacity: 0; transform: translate(-50%, -160%) scale(1); } }
+@media (prefers-reduced-motion: reduce) { .hit-pop { animation-duration: 0.01s; } }
+/* 遊戲房：操作提示放在「回原位」上面，不重疊 */
+body.mode-game .ctl-hint { bottom: calc(250px + env(safe-area-inset-bottom)); }
+/* 分數列不換行（人多時可以左右滑），才不會疊到下面的目標文字；手機上省略道具名稱 */
+.g-scores { flex-wrap: nowrap; overflow-x: auto; max-width: calc(100vw - 150px); scrollbar-width: none; pointer-events: auto; }
+.g-scores::-webkit-scrollbar { display: none; }
+.g-scores .chip { flex: 0 0 auto; }
+@media (max-width: 760px) {
+  .g-tool { display: none; }
+  .g-scores .chip { font-size: 13px; padding: 5px 8px; }
+  .g-scores .chip b { font-size: 16px; }
+  .g-timer { padding: 5px 9px; font-size: 13px; }
+}

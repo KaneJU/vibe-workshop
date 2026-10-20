@@ -28,6 +28,8 @@
     "test:tools": "node tests/tools.mjs",
     "test:custom-tool": "node tests/custom-tool.mjs",
     "test:room-restart": "node tests/room-restart.mjs",
+    "test:builtin-refresh": "node tests/builtin-refresh.mjs",
+    "visual": "node tests/visual.mjs",
     "bench": "node tests/bench.mjs"
   },
   "dependencies": {

@@ -20,6 +20,8 @@ const fmt = (s) => {
 };
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
+import { createArena } from './arena.mjs';
+
 export function createGame(env) {
   const { THREE, scene, camera, controls, renderer, runtime, engine, tools, isTouch, api, toast } = env;
   const $ = (s) => document.querySelector(s);
@@ -48,24 +50,13 @@ export function createGame(env) {
 
   // ---------------- 場地 ----------------
 
+  // 訓練場（天空、地面、牆、燈、陰影）：見 arena.mjs
+  let range = null;
   function buildArena() {
-    const floorMark = new THREE.Mesh(new THREE.RingGeometry(1.6, 1.68, 64), new THREE.MeshBasicMaterial({ color: 0x38e1ff, transparent: true, opacity: 0.5, depthWrite: false }));
-    floorMark.rotation.x = -Math.PI / 2;
-    floorMark.position.y = 0.01;
-    arena.add(floorMark);
-    arena.userData.mark = floorMark;
+    range = createArena({ THREE, scene, renderer, env: env.envAdapter, sun: env.sun, hemi: env.hemi, isTouch });
   }
   function arenaLook(kind) {
-    const mark = arena.userData.mark;
-    if (kind === 'ring') {
-      mark.geometry.dispose();
-      mark.geometry = new THREE.RingGeometry(6.6, 6.75, 96);
-      mark.position.set(0, 0.01, 0);
-    } else {
-      mark.geometry.dispose();
-      mark.geometry = new THREE.PlaneGeometry(9, 0.12);
-      mark.position.set(0, 0.01, 0.4); // 射擊線
-    }
+    range?.setKind(kind);
   }
 
   function decorPart(partId) {
@@ -80,25 +71,36 @@ export function createGame(env) {
     return built.object;
   }
 
-  function syncTargets(list, t) {
+  // 標靶：遊戲裡放大 1.3 倍比較好瞄；被打中（伺服器確認倒下）往後倒、縮下去，重新出現時從地上彈起來 —— 大家看到的時間一樣
+  const TARGET_SCALE = 1.3;
+  function syncTargets(list, t, dt = 1 / 60) {
     const seen = new Set();
     for (const tg of list || []) {
       seen.add(tg.id);
       let o = targetObjs.get(tg.id);
       if (!o) {
-        o = decorPart('p_vwtarget01');
-        o.userData.targetId = tg.id;
+        o = new THREE.Group();
+        const part = decorPart('p_vwtarget01');
+        o.add(part);
+        if (range) o.add(range.contactShadow(0.95));
+        o.userData = { targetId: tg.id, part, fall: tg.up ? 0 : 1, up: tg.up, pos: new THREE.Vector3(tg.x, 0, tg.z) };
         arena.add(o);
         targetObjs.set(tg.id, o);
       }
+      const u = o.userData;
       const dx = tg.moving && ['playing', 'preview'].includes(state?.phase) ? 1.5 * Math.sin(0.9 * ((t - (state.startAt || 0)) / 1000) + tg.phase) : 0;
-      o.position.set(tg.x + dx, 0, tg.z);
-      // 靶面朝向玩家（靶場朝 +Z；競技場朝中心）
+      // 伺服器在靶倒下一秒後才換位置重生：倒下的動畫在原地播完，重生時在新位置彈起來
+      u.pos.set(tg.x + dx, 0, tg.z);
+      o.position.copy(u.pos);
       o.rotation.y = state?.game?.arena === 'ring' ? Math.atan2(-tg.x, -tg.z) : 0;
-      const want = tg.up ? 1 : 0.001;
-      o.scale.setScalar(o.scale.x + (want - o.scale.x) * 0.35);
-      o.visible = o.scale.x > 0.02;
-      o.userData.up = tg.up;
+      // 倒下約 0.9 秒：前 0.35 秒往後倒、停一下、最後縮下去；重新立起時 0.3 秒彈上來
+      u.fall = tg.up ? Math.max(0, u.fall - dt * 3.3) : Math.min(1, u.fall + dt * 1.1);
+      const f = u.fall;
+      u.part.rotation.x = -1.35 * Math.min(1, f / 0.4); // 往後倒
+      const sc = TARGET_SCALE * (f < 0.7 ? 1 : 1 - (f - 0.7) / 0.3) * (tg.up && f > 0 ? 1 + 0.15 * Math.sin(f * Math.PI) : 1);
+      o.scale.setScalar(Math.max(0.001, sc));
+      o.visible = sc > 0.02;
+      u.up = tg.up;
     }
     for (const [id, o] of targetObjs) {
       if (!seen.has(id)) {
@@ -108,47 +110,109 @@ export function createGame(env) {
     }
   }
 
-  // 其他玩家：彩色人偶＋名字＋手上的槍（位置每 0.1 秒從伺服器來，這裡平滑跟上）
+  // ---------------- 其他玩家：有輪廓的角色（頭盔面罩、背包、雙腳會走、手上的槍跟著瞄準方向、開火有後座） ----------------
+  // 幾何共用；每個顏色一組材質；離開房間時名字貼圖一起釋放
+  const AV = {
+    torso: new THREE.CapsuleGeometry(0.2, 0.32, 4, 12),
+    hip: new THREE.BoxGeometry(0.34, 0.14, 0.22),
+    leg: new THREE.CapsuleGeometry(0.075, 0.63, 4, 8).translate(0, -0.39, 0), // 從髖部（0.78 m）一路到地面
+    head: new THREE.SphereGeometry(0.17, 20, 14),
+    visor: new THREE.SphereGeometry(0.172, 20, 10, Math.PI * 0.08, Math.PI * 0.84, Math.PI * 0.32, Math.PI * 0.28), // 臉朝 +Z 的一圈面罩
+    pack: new THREE.BoxGeometry(0.26, 0.32, 0.12),
+    strip: new THREE.BoxGeometry(0.03, 0.24, 0.01),
+    arm: new THREE.CapsuleGeometry(0.055, 0.3, 4, 8),
+    gun: new THREE.BoxGeometry(0.07, 0.09, 0.34),
+    barrel: new THREE.CylinderGeometry(0.022, 0.022, 0.16, 10).rotateX(Math.PI / 2),
+  };
+  const AVM = {
+    suit: new THREE.MeshStandardMaterial({ color: 0x2b333d, roughness: 0.7, metalness: 0.2 }),
+    visor: new THREE.MeshStandardMaterial({ color: 0x0b1018, roughness: 0.08, metalness: 0.9, envMapIntensity: 1.4 }),
+    gun: new THREE.MeshStandardMaterial({ color: 0xe9e4d8, roughness: 0.45, metalness: 0.05 }),
+    gunmetal: new THREE.MeshStandardMaterial({ color: 0x3b444d, roughness: 0.35, metalness: 0.8 }),
+  };
+  const teamMats = new Map();
+  function teamMat(color) {
+    if (!teamMats.has(color)) {
+      teamMats.set(color, {
+        shell: new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.1 }),
+        glow: new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1.6, roughness: 0.4 }),
+      });
+    }
+    return teamMats.get(color);
+  }
   function labelSprite(text, color) {
     const c = document.createElement('canvas');
     c.width = 256;
     c.height = 64;
     const g = c.getContext('2d');
-    g.fillStyle = 'rgba(4,12,20,0.75)';
+    g.fillStyle = 'rgba(4,12,20,0.72)';
     g.beginPath();
-    g.roundRect(4, 8, 248, 48, 22);
+    g.roundRect(4, 10, 248, 44, 20);
     g.fill();
     g.fillStyle = color;
-    g.font = 'bold 30px -apple-system, "PingFang TC", sans-serif';
-    g.textAlign = 'center';
+    g.beginPath();
+    g.arc(30, 32, 9, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = '#eaf6ff';
+    g.font = 'bold 28px -apple-system, "PingFang TC", sans-serif';
     g.textBaseline = 'middle';
-    g.fillText(text, 128, 33);
-    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false, transparent: true }));
-    s.scale.set(1.2, 0.3, 1);
+    g.fillText(text, 50, 33);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+    s.scale.set(0.84, 0.21, 1);
     s.renderOrder = 20;
     return s;
   }
+  const mesh = (geo, mat, x, y, z, parent) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.castShadow = true;
+    parent.add(m);
+    return m;
+  };
   function makeAvatar(p) {
+    const tm = teamMat(p.color);
     const g = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({ color: p.color, roughness: 0.45, emissive: p.color, emissiveIntensity: 0.25 });
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.24, 0.7, 6, 16), mat);
-    body.position.y = 0.6;
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.21, 20, 14), mat);
-    head.position.y = 1.35;
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.09, 0.08), new THREE.MeshBasicMaterial({ color: 0x0b1220 }));
-    visor.position.set(0, 1.38, 0.17);
+    const body = new THREE.Group(); // 上半身（走路時微微上下）
+    g.add(body);
+    mesh(AV.hip, AVM.suit, 0, 0.82, 0, body);
+    mesh(AV.torso, tm.shell, 0, 1.12, 0, body);
+    const pack = mesh(AV.pack, AVM.suit, 0, 1.14, -0.17, body);
+    mesh(AV.strip, tm.glow, 0, 0, -0.065, pack);
+    const head = new THREE.Group();
+    head.position.set(0, 1.5, 0);
+    body.add(head);
+    mesh(AV.head, tm.shell, 0, 0, 0, head);
+    mesh(AV.visor, AVM.visor, 0, 0.01, 0.004, head).rotation.y = 0;
+    const legs = [-1, 1].map((sx) => mesh(AV.leg, AVM.suit, sx * 0.09, 0.78, 0, g));
+    // 手和槍：整組跟著瞄準的上下角度轉
     const aim = new THREE.Group();
-    aim.position.set(0.22, 1.1, 0.1);
-    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.08, 0.38), new THREE.MeshStandardMaterial({ color: 0xe9e4d4 }));
-    barrel.position.z = 0.18;
-    aim.add(barrel);
+    aim.position.set(0.05, 1.28, 0.05);
+    body.add(aim);
+    const armR = mesh(AV.arm, tm.shell, 0.17, -0.06, 0.12, aim);
+    armR.rotation.x = Math.PI / 2.4;
+    const armL = mesh(AV.arm, tm.shell, -0.1, -0.08, 0.2, aim);
+    armL.rotation.set(Math.PI / 2.3, 0, -0.5);
+    const gun = new THREE.Group();
+    gun.position.set(0.1, -0.08, 0.32);
+    aim.add(gun);
+    mesh(AV.gun, AVM.gun, 0, 0, 0, gun);
+    mesh(AV.barrel, AVM.gunmetal, 0, 0.01, 0.24, gun);
+    const muzzle = mesh(new THREE.SphereGeometry(0.03, 8, 6), tm.glow, 0, 0.01, 0.33, gun);
     const label = labelSprite(p.name, p.color);
-    label.position.y = 1.85;
-    g.add(body, head, visor, aim, label);
-    g.traverse((m) => m.isMesh && (m.castShadow = true));
-    g.userData = { aim, label, name: p.name, mat };
+    label.position.y = 1.95;
+    g.add(label);
+    if (range) g.add(range.contactShadow(0.85));
+    g.userData = { name: p.name, aim, gun, muzzle, legs, body, label, walk: 0, kick: 0, last: new THREE.Vector3(), speed: 0 };
     arena.add(g);
     return g;
+  }
+  function disposeAvatar(a) {
+    a.removeFromParent();
+    a.userData.label.material.map.dispose();
+    a.userData.label.material.dispose();
+    a.userData.muzzle.geometry.dispose();
   }
   function syncAvatars(dt) {
     if (!state) return;
@@ -158,26 +222,48 @@ export function createGame(env) {
       present.add(p.id);
       let a = avatars.get(p.id);
       if (!a || a.userData.name !== p.name) {
-        if (a) a.removeFromParent();
+        if (a) disposeAvatar(a);
         a = makeAvatar(p);
         avatars.set(p.id, a);
         if (p.pose) a.position.set(p.pose.p[0], 0, p.pose.p[2]);
       }
+      const u = a.userData;
       const pose = p.pose || { p: [0, 1.6, 0], yaw: 0, pitch: 0 };
       const k = 1 - Math.exp(-10 * dt);
+      u.last.copy(a.position);
       a.position.x += (pose.p[0] - a.position.x) * k;
       a.position.z += (pose.p[2] - a.position.z) * k;
       a.rotation.y += Math.atan2(Math.sin(pose.yaw - a.rotation.y), Math.cos(pose.yaw - a.rotation.y)) * k;
-      a.userData.aim.rotation.x = -pose.pitch;
-      a.userData.mat.opacity = p.connected ? 1 : 0.35;
-      a.userData.mat.transparent = !p.connected;
+      // 走路：依移動速度擺腳、身體微微上下
+      const v = dt > 0 ? u.last.distanceTo(a.position) / dt : 0;
+      u.speed += (Math.min(v, 3) - u.speed) * Math.min(1, dt * 8);
+      u.walk += dt * (2 + u.speed * 4);
+      const swing = Math.min(1, u.speed / 1.5) * 0.55;
+      u.legs[0].rotation.x = Math.sin(u.walk) * swing;
+      u.legs[1].rotation.x = -Math.sin(u.walk) * swing;
+      u.body.position.y = Math.abs(Math.sin(u.walk)) * 0.03 * Math.min(1, u.speed);
+      // 瞄準：手和槍跟著上下角度；開火往後一頓
+      u.kick = Math.max(0, u.kick - dt * 8);
+      u.aim.rotation.x = -pose.pitch - 0.25 * u.kick;
+      u.gun.position.z = 0.32 - 0.05 * u.kick;
+      u.muzzle.scale.setScalar(1 + u.kick * 2.5);
+      // 斷線的人變半透明（每個顏色只有一個人，材質共用沒關係）
+      const tm = teamMat(p.color);
+      tm.shell.transparent = !p.connected;
+      tm.shell.opacity = p.connected ? 1 : 0.4;
+      u.label.material.opacity = p.connected ? 1 : 0.45;
     }
     for (const [id, a] of avatars) {
       if (!present.has(id)) {
-        a.removeFromParent();
+        disposeAvatar(a);
         avatars.delete(id);
       }
     }
+  }
+  // 別人開火：他的角色同一刻往後一頓、槍口一亮
+  function avatarKick(playerId) {
+    const a = avatars.get(playerId);
+    if (a) a.userData.kick = 1;
   }
 
   // ---------------- 道具（拿在手上） ----------------
@@ -198,9 +284,38 @@ export function createGame(env) {
       standAtSpawn();
       env.startControl(gun, 'wear');
       $('#ctlLabel').textContent = `🔫 ${gunPart?.name || '道具'}`;
+      $('#gameTool').textContent = `🔫 ${gunPart?.name || '道具'}`;
       $('#ctlHint').textContent = isTouch ? '拖曳畫面瞄準（看中間的準星），按右下 ⚡ 發射，左下搖桿走路' : '拖曳畫面瞄準（看中間的準星），按 ⚡ 或空白鍵發射，WASD 走路';
     }
     document.body.classList.add('aiming');
+  }
+  // 音效開關（記在這台裝置上）
+  const muteBtn = $('#gameMute');
+  const renderMute = () => (muteBtn.textContent = env.sfx?.muted ? '🔇' : '🔊');
+  muteBtn.onclick = () => {
+    env.sfx?.setMuted(!env.sfx.muted);
+    renderMute();
+  };
+  renderMute();
+  // 命中回饋：準星馬上變成 ✕（打到了），伺服器確認得分時在標靶上飄出「+1」
+  let hitTimer = 0;
+  function hitMarker() {
+    const el = $('#crosshair');
+    el.classList.add('hit');
+    clearTimeout(hitTimer);
+    hitTimer = setTimeout(() => el.classList.remove('hit'), 180);
+  }
+  function scorePop(worldPoint, points) {
+    const p = new THREE.Vector3(...worldPoint).project(camera);
+    if (p.z > 1) return;
+    const r = renderer.domElement.getBoundingClientRect();
+    const el = document.createElement('div');
+    el.className = 'hit-pop';
+    el.textContent = `+${points}`;
+    el.style.left = `${r.left + ((p.x + 1) / 2) * r.width}px`;
+    el.style.top = `${r.top + ((1 - p.y) / 2) * r.height}px`;
+    $('#hitPops').appendChild(el);
+    setTimeout(() => el.remove(), 850);
   }
   let spawnAt = null;
   function standAtSpawn() {
@@ -319,7 +434,10 @@ export function createGame(env) {
     for (const sh of s.shots) {
       if (seenShots.has(sh.id)) continue;
       seenShots.add(sh.id);
-      if (sh.by !== me.playerId) tools.remoteShot(sh);
+      if (sh.by !== me.playerId) {
+        tools.remoteShot(sh);
+        avatarKick(sh.by);
+      }
     }
     if (seenShots.size > 400) seenShots.clear();
     if (s.game.arena !== prev?.game?.arena) arenaLook(s.game.arena);
@@ -363,7 +481,13 @@ export function createGame(env) {
       }
     }
     if (view === 'room' && state) {
-      syncTargets(state.targets, serverNow());
+      // 牆是實體：走不出靶場（射擊台後面）或競技場中間的平台
+      if (engine.active && range) {
+        const before = camera.position.clone();
+        range.clampPlayer(state.game?.arena, camera.position);
+        controls.target.add(camera.position.clone().sub(before));
+      }
+      syncTargets(state.targets, serverNow(), dt);
       syncAvatars(dt);
       // 把自己的位置和瞄準方向告訴大家（每 0.12 秒、有變才送）
       const tnow = performance.now();
@@ -380,7 +504,7 @@ export function createGame(env) {
       renderTimer();
     }
     if (view === 'edit' && editing) {
-      syncTargets(previewTargets, Date.now());
+      syncTargets(previewTargets, Date.now(), dt);
       if (previewGun) previewGun.rotation.y += dt * 0.8;
     }
   }
@@ -720,7 +844,7 @@ export function createGame(env) {
 
   // 大廳背景也擺幾個標靶
   const hubUpdate = (dt, t) => {
-    if (view === 'hub') syncTargets(previewTargets, Date.now());
+    if (view === 'hub') syncTargets(previewTargets, Date.now(), dt);
   };
 
   return {
@@ -738,8 +862,13 @@ export function createGame(env) {
     },
     async onHit(h) {
       if (view !== 'room' || state?.phase !== 'playing' || h.kind !== 'target') return;
+      hitMarker();
+      const tg = state.targets.find((t) => t.id === h.id);
       const r = await act({ type: 'hit', target: h.id });
-      if (r.ok) toast(`🎯 命中！你有 ${r.score} 分`, 1500);
+      if (r.ok) {
+        env.sfx?.score();
+        scorePop(h.point, tg?.points || 1);
+      }
     },
     // 自動測試讀狀態用（只讀）
     state() {

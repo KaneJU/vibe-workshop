@@ -93,9 +93,25 @@ if (!existsSync(LIB_FILE) && existsSync(path.join(STARTER_DIR, 'library.json')))
       have.add(p.id);
       added.push(p.name);
     }
-    if (added.length) {
+    // 內建零件改版（範例裡標了 builtinRev 的，例如能量槍）：換成新版程式與縮圖。只動帶版本號的內建零件，
+    // 名字、使用者自己做的零件、組合零件、場景都不碰；組合零件裡用到它的，會自動看到新樣子
+    const refreshed = [];
+    for (const p of starter.parts) {
+      if (!Number.isFinite(p.builtinRev) || p.kind !== 'generated') continue;
+      const rec = mine.parts.find((q) => q.id === p.id);
+      if (!rec || (rec.builtinRev || 1) >= p.builtinRev) continue;
+      const src = path.join(STARTER_DIR, 'parts', `${p.id}.js`);
+      if (!existsSync(src)) continue;
+      await fs.copyFile(src, path.join(PARTS_DIR, `${p.id}.js`));
+      const thumb = path.join(STARTER_DIR, 'thumbs', `${p.id}.jpg`);
+      if (existsSync(thumb)) await fs.copyFile(thumb, path.join(THUMBS_DIR, `${p.id}.jpg`));
+      Object.assign(rec, { builtinRev: p.builtinRev, size: p.size, stats: p.stats, description: p.description });
+      refreshed.push(`${p.name}（第 ${p.builtinRev} 版）`);
+    }
+    if (added.length || refreshed.length) {
       await writeJson(LIB_FILE, mine);
-      log(`工具箱補上範例零件：${added.join('、')}`);
+      if (added.length) log(`工具箱補上範例零件：${added.join('、')}`);
+      if (refreshed.length) log(`內建零件換新版：${refreshed.join('、')}`);
     }
   }
 }

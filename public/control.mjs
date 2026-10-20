@@ -130,7 +130,67 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
     }
   }
 
-  function start(inst, mode, part) {
+  // 拿著道具（能量槍、或裡面有道具的組合零件）：照「道具本身」的大小縮放（不是整組），握把在右下、槍口對準準星
+  // （畫面中央約 12 公尺處）。大組合不會再縮到看不清主道具；整組最多約 0.85 公尺，免得擋住畫面
+  const TOOL_LEN = 0.34;
+  const TOOL_MAX_WHOLE = 0.85;
+  function toolHold(obj, toolPartId) {
+    obj.updateMatrixWorld(true);
+    let node = obj;
+    obj.traverse((o) => {
+      if (node === obj && o !== obj && o.userData?.partId === toolPartId) node = o;
+    });
+    const inv = obj.matrixWorld.clone().invert();
+    const rel = new THREE.Matrix4().multiplyMatrices(inv, node.matrixWorld); // 道具在整組裡的位置與方向
+    const toolBox = new THREE.Box3().setFromObject(node).applyMatrix4(inv);
+    const whole = new THREE.Box3().setFromObject(obj).applyMatrix4(inv);
+    const ts = toolBox.getSize(new THREE.Vector3());
+    const ws = whole.getSize(new THREE.Vector3());
+    const toolK = TOOL_LEN / Math.max(ts.x, ts.y, ts.z, 0.01);
+    // 整組最多約 0.85 公尺（不擋畫面），但道具本身至少保持單獨拿時 60% 的大小（看得清楚是什麼、往哪裡射）
+    const k = Math.max(toolK * 0.6, Math.min(toolK, TOOL_MAX_WHOLE / Math.max(ws.x, ws.y, ws.z, 0.01)));
+    const rot = new THREE.Matrix4().extractRotation(rel);
+    const fwd = new THREE.Vector3(0, 0, 1).applyMatrix4(rot).normalize();
+    const up = new THREE.Vector3(0, 1, 0).applyMatrix4(rot).normalize();
+    const grip = new THREE.Vector3(0, 0.07, 0).applyMatrix4(rel); // 握把中段（道具原點在握把底部）
+    return { k, fwd, up, grip, kick: 0, bob: 0 };
+  }
+  const _basisA = new THREE.Matrix4();
+  const _basisB = new THREE.Matrix4();
+  const _x = new THREE.Vector3();
+  const _y = new THREE.Vector3();
+  const _f = new THREE.Vector3();
+  function placeTool(dt) {
+    const h = s.toolHold;
+    const d = 0.5 * Math.sqrt(82 / camera.fov); // 電腦（視角窄）拿遠一點，看起來不會太大
+    const halfH = d * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    const halfW = halfH * camera.aspect;
+    const moving = Math.min(1, Math.hypot(input.x, input.y));
+    h.bob += dt * (2 + moving * 7);
+    h.kick = Math.max(0, h.kick - dt * 9);
+    const sway = reducedMotion ? 0 : moving;
+    // 握把在右下，但不壓到右下角的 ⚡ 按鈕、也不擋中間的準星
+    const grip = new THREE.Vector3(halfW * 0.46 + Math.sin(h.bob) * 0.006 * sway, -halfH * 0.44 + Math.abs(Math.cos(h.bob)) * 0.008 * sway, -d);
+    // 槍口方向：從握把指向準星附近（3.5 公尺處，往內收一點，看得到槍的側面）；後座時往上翹一點、往後退一點
+    _f.set(-0.25, 0.1, -3.5).sub(grip).normalize();
+    _f.y += 0.12 * h.kick;
+    _f.normalize();
+    // 槍身往內側斜一點（像手握著，不是平放）
+    const cant = new THREE.Vector3(0.18, 1, 0).normalize();
+    _x.crossVectors(_f, cant).normalize();
+    _y.crossVectors(_x, _f).normalize();
+    // 把道具自己的（前、上）對到鏡頭空間的（前、上）
+    const lx = new THREE.Vector3().crossVectors(h.fwd, h.up).normalize();
+    const ly = new THREE.Vector3().crossVectors(lx, h.fwd).normalize();
+    _basisA.makeBasis(lx, ly, h.fwd);
+    _basisB.makeBasis(_x, _y, _f);
+    s.obj.quaternion.setFromRotationMatrix(_basisB.multiply(_basisA.transpose()));
+    grip.addScaledVector(_f, -0.03 * h.kick);
+    s.obj.position.copy(grip).sub(h.grip.clone().multiplyScalar(h.k).applyQuaternion(s.obj.quaternion));
+  }
+  const reducedMotion = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+  function start(inst, mode, part, opts = {}) {
     if (s) stop();
     resetInput();
     const obj = inst.object;
@@ -164,9 +224,11 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
       const rest = inst.restBox.getSize(new THREE.Vector3());
       const restCenter = inst.restBox.getCenter(new THREE.Vector3());
       const k = 0.26 / Math.max(rest.x, rest.y, rest.z, 0.01);
+      if (opts.tool) s.toolHold = toolHold(obj, opts.tool.partId);
+      obj.traverse((m) => m.isMesh && (m.castShadow = false)); // 拿在手上（鏡頭前）的東西不用算影子
       obj.removeFromParent();
       camera.add(obj);
-      obj.scale.setScalar(k);
+      obj.scale.setScalar(s.toolHold ? s.toolHold.k : k);
       obj.quaternion.setFromEuler(new THREE.Euler(-0.35, Math.PI + 0.25, 0));
       s.anchor = new THREE.Vector3();
       placeAnchor();
@@ -209,6 +271,7 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
       // 放回使用者前方的地上，恢復原本大小
       camera.remove(obj);
       world.add(obj);
+      obj.traverse((m) => m.isMesh && (m.castShadow = true));
       obj.scale.copy(s.prev.scale);
       const camPos = camera.getWorldPosition(new THREE.Vector3());
       camera.getWorldDirection(fwd);
@@ -388,7 +451,8 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
   function updateWear(dt) {
     const { obj } = s;
     placeAnchor();
-    if (!(s.punch > 0)) obj.position.copy(s.anchor).sub(s.centerOffset);
+    if (s.toolHold) placeTool(dt);
+    else if (!(s.punch > 0)) obj.position.copy(s.anchor).sub(s.centerOffset);
     // 搖桿走路：方向跟著目前看的方向，鏡頭和轉動中心一起平移
     if (Math.abs(input.x) > 0.05 || Math.abs(input.y) > 0.05) {
       camera.getWorldDirection(fwd);
@@ -410,7 +474,7 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
       actionHeld: input.actionHeld,
       t: s.t,
     };
-    if (!runHook(state, dt)) {
+    if (!runHook(state, dt) && !s.toolHold) {
       // 通用動作：往前揮一拳
       if (input.actionPressed) s.punch = 0.32;
       if (s.punch > 0) {
@@ -459,8 +523,12 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
       if (down && !input.actionHeld) input.actionPressed = true;
       input.actionHeld = down;
     },
+    // 道具開火的後座（整把往後、槍口上揚，很快回正）
+    kick(amount = 1) {
+      if (s?.toolHold) s.toolHold.kick = Math.min(1.5, s.toolHold.kick + amount);
+    },
     spinWorn(rad) {
-      if (s?.mode !== 'wear') return;
+      if (s?.mode !== 'wear' || s.toolHold) return;
       // 轉方向，但讓物件中心留在手的位置
       s.obj.rotateY(rad);
       s.centerOffset.copy(s.restCenterK).applyQuaternion(s.obj.quaternion);

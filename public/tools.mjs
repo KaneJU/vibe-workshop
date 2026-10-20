@@ -48,7 +48,7 @@ export function findTool(partId, partOf, depth = 0) {
 
 // ---------------- 瀏覽器：射擊、子彈、命中 ----------------
 
-export function createTools({ THREE, scene, camera, engine, partOf, hittables, onFire, onHit, now = () => performance.now() / 1000 }) {
+export function createTools({ THREE, scene, camera, engine, partOf, hittables, onFire, onHit, sfx = null }) {
   const shots = [];
   const sparks = [];
   const ray = new THREE.Raycaster();
@@ -59,6 +59,60 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
   let override = null; // 遊戲設定改過的道具參數（顏色、射速）
   let enabled = true;
 
+  // ---- 共用資源：幾何一份、每種顏色一組材質；子彈、火花、閃光用完放回池子重用（連射不會一直配新記憶體） ----
+  const GEO = {
+    core: new THREE.SphereGeometry(1, 12, 8),
+    glow: new THREE.SphereGeometry(1, 12, 8),
+    trail: new THREE.CylinderGeometry(0.001, 0.6, 9, 8, 1, true).rotateX(-Math.PI / 2).translate(0, 0, -4.5), // 頭粗、往後變細
+    spark: new THREE.BoxGeometry(1, 1, 1),
+    ring: new THREE.TorusGeometry(1, 0.08, 6, 32),
+  };
+  const mats = new Map();
+  function matsFor(color) {
+    let m = mats.get(color);
+    if (!m) {
+      const add = { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending };
+      m = {
+        core: new THREE.MeshBasicMaterial({ color }),
+        glow: new THREE.MeshBasicMaterial({ color, opacity: 0.35, ...add }),
+        trail: new THREE.MeshBasicMaterial({ color, opacity: 0.5, ...add }),
+        spark: new THREE.MeshBasicMaterial({ color, ...add }),
+        flash: new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.9, ...add }),
+        debris: new THREE.MeshStandardMaterial({ color: 0xd9d4c7, roughness: 0.8 }),
+      };
+      mats.set(color, m);
+    }
+    return m;
+  }
+  const shotPool = [];
+  function acquireShot(tool) {
+    const m = matsFor(tool.color);
+    let g = shotPool.pop();
+    if (!g) {
+      g = new THREE.Group();
+      g.add(new THREE.Mesh(GEO.core), new THREE.Mesh(GEO.glow), new THREE.Mesh(GEO.trail));
+      g.children.forEach((c) => (c.frustumCulled = false));
+    }
+    const [core, glow, trail] = g.children;
+    core.material = m.core;
+    glow.material = m.glow;
+    trail.material = m.trail;
+    core.scale.setScalar(tool.size);
+    glow.scale.setScalar(tool.size * 2.2);
+    trail.scale.setScalar(tool.size);
+    scene.add(g);
+    return g;
+  }
+  const fxPool = [];
+  function acquireFx(geo, mat) {
+    const m = fxPool.pop() || new THREE.Mesh(geo, mat);
+    m.geometry = geo;
+    m.material = mat;
+    m.rotation.set(0, 0, 0);
+    scene.add(m);
+    return m;
+  }
+
   // 正在拿著（穿戴）的東西是不是道具
   function heldTool() {
     if (!engine.active || engine.mode !== 'wear') return null;
@@ -68,46 +122,23 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
     return { inst, tool: { ...found.tool, ...(override || {}) } };
   }
 
-  // 槍口在哪：零件標了 userData.muzzle 就用它，不然用外框最前面
+  // 槍口在哪：零件標了 userData.muzzle 就用它，不然用外框中心
   function muzzleOf(obj, target) {
     let m = null;
     obj.traverse((o) => {
       if (!m && o.userData?.muzzle?.isObject3D) m = o.userData.muzzle;
     });
     if (m) return m.getWorldPosition(target);
-    const box = new THREE.Box3().setFromObject(obj);
-    return box.getCenter(target);
-  }
-
-  function projectileMesh(tool) {
-    const g = new THREE.Group();
-    const core = new THREE.Mesh(new THREE.SphereGeometry(tool.size, 12, 8), new THREE.MeshBasicMaterial({ color: tool.color }));
-    const glow = new THREE.Mesh(
-      new THREE.SphereGeometry(tool.size * 2.2, 12, 8),
-      new THREE.MeshBasicMaterial({ color: tool.color, transparent: true, opacity: 0.35, depthWrite: false, blending: THREE.AdditiveBlending }),
-    );
-    const trail = new THREE.Mesh(
-      new THREE.CylinderGeometry(tool.size * 0.6, 0.001, tool.size * 9, 8, 1, true),
-      new THREE.MeshBasicMaterial({ color: tool.color, transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending }),
-    );
-    trail.rotation.x = -Math.PI / 2;
-    trail.position.z = -tool.size * 4.5;
-    g.add(core, glow, trail);
-    return g;
+    return new THREE.Box3().setFromObject(obj).getCenter(target);
   }
 
   // 射一發：從槍口飛向準星（畫面中央）對到的那一點
-  function fire(held, { remote = false, from = null, to = null } = {}) {
+  function fire(held) {
     const tool = held.tool;
-    const start = from ? new THREE.Vector3(...from) : muzzleOf(held.inst.object, new THREE.Vector3());
-    let aim;
-    if (to) aim = new THREE.Vector3(...to);
-    else {
-      ray.setFromCamera({ x: 0, y: 0 }, camera);
-      const hits = ray.intersectObjects(hittables().map((h) => h.object), true);
-      aim = hits[0] ? hits[0].point.clone() : ray.ray.at(tool.range, new THREE.Vector3());
-    }
-    const dirs = [];
+    const start = muzzleOf(held.inst.object, new THREE.Vector3());
+    ray.setFromCamera({ x: 0, y: 0 }, camera);
+    const hits = ray.intersectObjects(hittables().map((h) => h.object), true);
+    const aim = hits[0] ? hits[0].point.clone() : ray.ray.at(tool.range, new THREE.Vector3());
     const base = aim.clone().sub(start).normalize();
     for (let i = 0; i < tool.burst; i += 1) {
       const d = base.clone();
@@ -116,20 +147,21 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
         d.y += (Math.random() - 0.5) * tool.spread;
         d.normalize();
       }
-      dirs.push(d);
-    }
-    for (const d of dirs) {
-      const mesh = projectileMesh(tool);
+      const mesh = acquireShot(tool);
       mesh.position.copy(start);
       mesh.lookAt(start.clone().add(d));
-      scene.add(mesh);
-      shots.push({ mesh, pos: start.clone(), dir: d, speed: tool.speed, left: tool.range, remote, tool });
+      shots.push({ mesh, pos: start.clone(), dir: d, speed: tool.speed, left: tool.range, remote: false, tool });
     }
-    if (!remote) {
-      fired += 1;
-      held.inst.object.traverse((o) => typeof o.userData?.onFire === 'function' && safe(() => o.userData.onFire()));
-      onFire?.({ from: start.toArray(), to: start.clone().addScaledVector(base, Math.min(start.distanceTo(aim) + 1, tool.range)).toArray(), color: tool.color });
-    }
+    fired += 1;
+    // 槍口閃光：一團很亮、很短的光（用發光貼片，不加燈，手機上不會多算光照）
+    const flash = acquireFx(GEO.glow, matsFor(tool.color).flash);
+    flash.position.copy(start);
+    flash.userData = { kind: 'flash', life: 0.07, max: 0.07 };
+    flash.scale.setScalar(0.05);
+    sparks.push(flash);
+    sfx?.fire();
+    held.inst.object.traverse((o) => typeof o.userData?.onFire === 'function' && safe(() => o.userData.onFire()));
+    onFire?.({ from: start.toArray(), to: start.clone().addScaledVector(base, Math.min(start.distanceTo(aim) + 1, tool.range)).toArray(), color: tool.color });
   }
 
   function safe(fn) {
@@ -140,25 +172,41 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
     }
   }
 
-  function burstFx(at, color) {
-    for (let i = 0; i < 14; i += 1) {
-      const m = new THREE.Mesh(
-        new THREE.SphereGeometry(0.025, 6, 4),
-        new THREE.MeshBasicMaterial({ color, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }),
-      );
-      m.position.copy(at);
-      m.userData = { v: new THREE.Vector3((Math.random() - 0.5) * 4, Math.random() * 3, (Math.random() - 0.5) * 4), life: 0.5 + Math.random() * 0.3 };
-      scene.add(m);
-      sparks.push(m);
+  // 命中：一團火花、一個白色閃光、幾片碎屑往外噴（數量有上限，用完收回）
+  function impactFx(at, color, normal = null) {
+    const m = matsFor(color);
+    const flash = acquireFx(GEO.glow, m.flash);
+    flash.position.copy(at);
+    flash.userData = { kind: 'flash', life: 0.2, max: 0.2 };
+    flash.scale.setScalar(0.06);
+    sparks.push(flash);
+    // 衝擊波：一圈光環朝鏡頭擴散
+    const ring = acquireFx(GEO.ring, m.spark);
+    ring.position.copy(at);
+    ring.lookAt(camera.getWorldPosition(new THREE.Vector3()));
+    ring.userData = { kind: 'ring', life: 0.3, max: 0.3 };
+    ring.scale.setScalar(0.08);
+    sparks.push(ring);
+    const n = sparks.length > 120 ? 4 : 12;
+    for (let i = 0; i < n; i += 1) {
+      const sp = acquireFx(GEO.spark, i < 4 ? m.debris : m.spark);
+      sp.position.copy(at);
+      const v = new THREE.Vector3((Math.random() - 0.5) * 4, Math.random() * 3 + 0.5, (Math.random() - 0.5) * 4);
+      if (normal) v.addScaledVector(normal, 2);
+      const size = i < 4 ? 0.06 : 0.045;
+      sp.scale.setScalar(size);
+      sp.userData = { kind: i < 4 ? 'debris' : 'spark', v, w: new THREE.Vector3(Math.random() * 12, Math.random() * 12, 0), life: 0.5 + Math.random() * 0.35, size };
+      sparks.push(sp);
     }
   }
 
-  function dispose(o) {
-    o.removeFromParent();
-    o.traverse((c) => {
-      c.geometry?.dispose?.();
-      c.material?.dispose?.();
-    });
+  function releaseShot(s) {
+    s.mesh.removeFromParent();
+    if (shotPool.length < 64) shotPool.push(s.mesh);
+  }
+  function releaseFx(m) {
+    m.removeFromParent();
+    if (fxPool.length < 160) fxPool.push(m);
   }
 
   function update(dt) {
@@ -170,7 +218,7 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
       cool = 1 / held.tool.rate;
     }
     // 子彈：這一格從 a 飛到 b，中間碰到東西就算命中
-    const targets = shots.length ? hittables() : [];
+    const targets = shots.some((s) => !s.remote) ? hittables() : [];
     for (let i = shots.length - 1; i >= 0; i -= 1) {
       const s = shots[i];
       const step = Math.min(s.speed * dt, s.left);
@@ -182,12 +230,12 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
         ray.far = step + s.tool.size;
         const list = ray.intersectObjects(targets.map((h) => h.object), true);
         if (list[0]) {
-          let o = list[0].object;
+          const o = list[0].object;
           const owner = targets.find((h) => {
             for (let p = o; p; p = p.parent) if (p === h.object) return true;
             return false;
           });
-          if (owner) hit = { owner, point: list[0].point };
+          if (owner) hit = { owner, point: list[0].point, normal: list[0].face?.normal?.clone().transformDirection(o.matrixWorld) || null };
         }
         ray.far = Infinity;
       }
@@ -195,13 +243,15 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
       s.left -= step;
       s.mesh.position.copy(s.pos);
       if (hit) {
-        burstFx(hit.point, s.tool.color);
+        impactFx(hit.point, s.tool.color, hit.normal);
+        sfx?.hit();
         hit.owner.object.traverse((o) => typeof o.userData?.onHit === 'function' && safe(() => o.userData.onHit()));
         onHit?.({ ...hit.owner, point: hit.point.toArray(), dir: s.dir.toArray(), tool: s.tool });
       }
       if (hit || s.left <= 1e-4 || s.pos.y < -0.5) {
-        if (!hit && s.pos.y < 0.05) burstFx(s.pos, s.tool.color);
-        dispose(s.mesh);
+        if (!hit && s.pos.y < 0.05) impactFx(s.pos, s.tool.color);
+        if (s.remote && s.left <= 1e-4) impactFx(s.pos, s.tool.color);
+        releaseShot(s);
         shots.splice(i, 1);
       }
     }
@@ -209,11 +259,26 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
       const m = sparks[i];
       const u = m.userData;
       u.life -= dt;
-      u.v.y -= 9 * dt;
-      m.position.addScaledVector(u.v, dt);
-      m.material.opacity = Math.max(0, u.life * 2);
+      if (u.kind === 'flash') {
+        const k = Math.max(0, u.life / u.max);
+        m.scale.setScalar(0.06 + (1 - k) * 0.5 * k * 4);
+      } else if (u.kind === 'ring') {
+        const k = Math.max(0, u.life / u.max);
+        m.scale.setScalar(0.08 + (1 - k) * 0.7);
+      } else {
+        u.v.y -= 9 * dt;
+        m.position.addScaledVector(u.v, dt);
+        if (m.position.y < 0.01) {
+          m.position.y = 0.01;
+          u.v.multiplyScalar(0.4);
+          u.v.y = Math.abs(u.v.y) * 0.3;
+        }
+        m.rotation.x += u.w.x * dt;
+        m.rotation.y += u.w.y * dt;
+        m.scale.setScalar(u.size * Math.min(1, u.life * 3));
+      }
       if (u.life <= 0) {
-        dispose(m);
+        releaseFx(m);
         sparks.splice(i, 1);
       }
     }
@@ -232,10 +297,9 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
       const len = d.length();
       if (!(len > 0.01)) return;
       d.normalize();
-      const mesh = projectileMesh(tool);
+      const mesh = acquireShot(tool);
       mesh.position.copy(a);
       mesh.lookAt(b);
-      scene.add(mesh);
       shots.push({ mesh, pos: a, dir: d, speed: tool.speed, left: Math.min(len, tool.range), remote: true, tool });
     },
     // 遊戲設定改了道具（顏色、射速）：也把槍的發光部分換顏色
@@ -259,6 +323,10 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
     },
     get fired() {
       return fired;
+    },
+    // 檢查資源有沒有一直累積（測試用）
+    get pooled() {
+      return { shots: shots.length, sparks: sparks.length, shotPool: shotPool.length, fxPool: fxPool.length, colors: mats.size };
     },
   };
 }
