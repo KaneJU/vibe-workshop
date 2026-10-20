@@ -54,6 +54,11 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
   const ray = new THREE.Raycaster();
   const _a = new THREE.Vector3();
   const _b = new THREE.Vector3();
+  const _cam = new THREE.Vector3();
+  // 閃光（槍口、命中點）在畫面上最多多大：用「張角」限制，半徑最多 5°（手機直拿約 40 px、電腦約 60 px）。
+  // 實際大小上限＝離鏡頭距離 × sin 5°：10 公尺外標靶上的命中閃光不受影響；很近的（第一人稱槍口在鏡頭前約 0.7 公尺、
+  // 打中眼前的東西）跟著縮小，不會變成一團蓋住準星和大半畫面的白光
+  const FLASH_VIEW = Math.sin(THREE.MathUtils.degToRad(5));
   let cool = 0;
   let fired = 0; // 總共射了幾發（測試和統計用）
   let override = null; // 遊戲設定改過的道具參數（顏色、射速）
@@ -153,11 +158,12 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
       shots.push({ mesh, pos: start.clone(), dir: d, speed: tool.speed, left: tool.range, remote: false, tool });
     }
     fired += 1;
-    // 槍口閃光：一團很亮、很短的光（用發光貼片，不加燈，手機上不會多算光照）
+    // 槍口閃光：一小團很亮、很短的光（用發光貼片，不加燈，手機上不會多算光照）。
+    // 槍口就在鏡頭前約 0.7 公尺，只能小小一團（半徑 3～6 公分）；跟命中點用同一套大小會脹到半公尺、白光蓋滿畫面
     const flash = acquireFx(GEO.glow, matsFor(tool.color).flash);
     flash.position.copy(start);
-    flash.userData = { kind: 'flash', life: 0.07, max: 0.07 };
-    flash.scale.setScalar(0.05);
+    flash.userData = { kind: 'flash', life: 0.07, max: 0.07, size: 0.03, grow: 0.03 };
+    flash.scale.setScalar(0.03);
     sparks.push(flash);
     sfx?.fire();
     held.inst.object.traverse((o) => typeof o.userData?.onFire === 'function' && safe(() => o.userData.onFire()));
@@ -177,7 +183,7 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
     const m = matsFor(color);
     const flash = acquireFx(GEO.glow, m.flash);
     flash.position.copy(at);
-    flash.userData = { kind: 'flash', life: 0.2, max: 0.2 };
+    flash.userData = { kind: 'flash', life: 0.2, max: 0.2, size: 0.06, grow: 0.5 };
     flash.scale.setScalar(0.06);
     sparks.push(flash);
     // 衝擊波：一圈光環朝鏡頭擴散
@@ -255,13 +261,15 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
         shots.splice(i, 1);
       }
     }
+    if (sparks.length) camera.getWorldPosition(_cam);
     for (let i = sparks.length - 1; i >= 0; i -= 1) {
       const m = sparks[i];
       const u = m.userData;
       u.life -= dt;
       if (u.kind === 'flash') {
+        // 先脹大再縮回（壽命一半時最大＝size + grow），但畫面上最多 FLASH_VIEW 的張角
         const k = Math.max(0, u.life / u.max);
-        m.scale.setScalar(0.06 + (1 - k) * 0.5 * k * 4);
+        m.scale.setScalar(Math.min(u.size + u.grow * 4 * k * (1 - k), m.position.distanceTo(_cam) * FLASH_VIEW));
       } else if (u.kind === 'ring') {
         const k = Math.max(0, u.life / u.max);
         m.scale.setScalar(0.08 + (1 - k) * 0.7);
