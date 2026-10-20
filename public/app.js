@@ -11,6 +11,7 @@ import { createTools, findTool, normalizeTarget } from './tools.mjs';
 import { createGame } from './game.mjs';
 import { createArena } from './arena.mjs';
 import { createSfx } from './sfx.mjs';
+import { createQuality } from './quality.mjs';
 
 const $ = (sel) => document.querySelector(sel);
 // 四種畫面：首頁（/）、新手教學（/?play）、遊戲房（/?games、/?edit=、/?room=）、自由工坊（/?ws；舊網址帶 physics、safe 參數的也直接進工坊）
@@ -2094,9 +2095,7 @@ window.addEventListener('resize', () => {
 
 let lastT = now();
 let lastWorldSave = 0;
-// 自動畫質（首頁、遊戲房）：連續 2 秒每格超過 40 ms，就降低解析度（2 → 1.5 → 1），再不夠就關影子、最後降到 0.75；
-// 順順跑 6 秒再一步步升回去。慢的手機也能玩，快的裝置看到完整畫質
-const quality = { max: Math.min(window.devicePixelRatio, 2), pr: Math.min(window.devicePixelRatio, 2), slow: 0, fast: 0, shadows: true, steps: 0 };
+// 自動畫質（首頁、遊戲房）：慢就降一階、順了很久才升一階（階梯、遲滯、預算都在 quality.mjs）
 // 固定最高畫質（只給前後對照拍照用：localStorage vw_quality=max）
 const pinQuality = (() => {
   try {
@@ -2105,37 +2104,21 @@ const pinQuality = (() => {
     return false;
   }
 })();
+const quality = createQuality({
+  max: Math.min(window.devicePixelRatio, 2),
+  canSwitchShadows: () => !game?.inPlay(),
+  apply(level) {
+    if (renderer.getPixelRatio() !== level.pr) renderer.setPixelRatio(level.pr);
+    if (renderer.shadowMap.enabled !== level.shadows) {
+      // 開關影子要讓材質換 shader：第一次關會編譯一次，之後切回來都用已經編好的
+      renderer.shadowMap.enabled = level.shadows;
+      scene.traverse((o) => o.material && (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => (m.needsUpdate = true)));
+    }
+  },
+});
 function adaptQuality(rawDt) {
   if ((MODE !== 'game' && MODE !== 'title') || pinQuality) return;
-  if (rawDt > 0.04) {
-    quality.slow += Math.min(rawDt, 0.25);
-    quality.fast = 0;
-  } else if (rawDt < 0.022) {
-    quality.fast += rawDt;
-    quality.slow = Math.max(0, quality.slow - rawDt);
-  }
-  if (quality.slow > 2) {
-    quality.slow = 0;
-    if (quality.pr > 1) {
-      quality.pr = Math.max(1, quality.pr - 0.5);
-      renderer.setPixelRatio(quality.pr);
-      quality.steps += 1;
-    } else if (quality.shadows) {
-      quality.shadows = false;
-      renderer.shadowMap.enabled = false;
-      scene.traverse((o) => o.material && (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => (m.needsUpdate = true)));
-      quality.steps += 1;
-    } else if (quality.pr > 0.75) {
-      // 最後一階（很慢的電腦）：畫面用 0.75 倍解析度畫再放大
-      quality.pr = 0.75;
-      renderer.setPixelRatio(quality.pr);
-      quality.steps += 1;
-    }
-  } else if (quality.fast > 6 && quality.pr < quality.max) {
-    quality.fast = 0;
-    quality.pr = Math.min(quality.max, quality.pr + 0.5);
-    renderer.setPixelRatio(quality.pr);
-  }
+  quality.update(rawDt);
 }
 renderer.setAnimationLoop(() => {
   const t = now();
@@ -2425,7 +2408,7 @@ window.__ws = {
     return tools.pooled;
   },
   get quality() {
-    return { ...quality };
+    return { ...quality.state, inPlay: !!game?.inPlay(), renderer: { pixelRatio: renderer.getPixelRatio(), shadows: renderer.shadowMap.enabled, programs: renderer.info.programs?.length ?? null } };
   },
   screenOf(id, where = 'center') {
     const b = worldBox(instances.get(id));

@@ -879,6 +879,10 @@ export function createGame(env) {
         scorePop(h.point, tg?.points || 1);
       }
     },
+    // 比賽中（倒數、進行）：自動畫質不在這時候開關影子（第一次關要編譯 shader，會卡一下）
+    inPlay() {
+      return view === 'room' && (state?.phase === 'countdown' || state?.phase === 'playing');
+    },
     // 自動測試讀狀態用（只讀）
     state() {
       return {

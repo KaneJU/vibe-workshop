@@ -1,5 +1,6 @@
 // 同一個遊戲場景的繪圖成本（前後對照用）：一個頁面、用這台機器的 GPU、解除影格上限（不等螢幕更新），
 // 開房、開始、拿槍看向靶場，量 6 秒每格花多久，加上 renderer 的繪製次數、三角形、記憶體。
+// QUALITY=auto 時先等自動畫質穩定（降級過渡另外記在 transition），量的是穩定之後的 6 秒。
 //   SERVER_ROOT=<版本資料夾> VIEW=m|d QUALITY=max|auto node tests/perf-scene.mjs
 // 自己開只聽 127.0.0.1 的測試伺服器（5319、暫存資料夾、固定房號）。注意：這是同一台 Mac（M4）的相對比較，不是真手機數據。
 import { spawn } from 'node:child_process';
@@ -52,7 +53,23 @@ try {
     w.controls.target.copy(c.position).addScaledVector(d, 0.1);
     w.controls.update();
   });
-  await sleep(QUALITY === 'auto' ? 8000 : 1500); // auto：給自動畫質時間調整
+  // auto：等自動畫質調整完（6 秒都沒有再換階，最多 40 秒；舊版沒有階的資訊就固定等 8 秒），過渡期和之後的穩定期分開記
+  let transition = null;
+  if (QUALITY === 'auto') {
+    const t0 = Date.now();
+    const hasLevel = await page.evaluate(() => typeof window.__ws.quality?.level === 'number');
+    if (!hasLevel) await sleep(8000);
+    else {
+      let last = -1;
+      let since = Date.now();
+      while (Date.now() - t0 < 40000 && Date.now() - since < 6000) {
+        const lv = await page.evaluate(() => window.__ws.quality.level);
+        if (lv !== last) [last, since] = [lv, Date.now()];
+        await sleep(250);
+      }
+      transition = { seconds: +((Date.now() - t0) / 1000).toFixed(1), log: await page.evaluate(() => window.__ws.quality.log), pending: await page.evaluate(() => window.__ws.quality.pending) };
+    }
+  } else await sleep(1500);
   const r = await page.evaluate(
     () =>
       new Promise((res) => {
@@ -76,7 +93,7 @@ try {
   );
   const d = r.d.slice(5).sort((a, b) => a - b);
   const q = (p) => d[Math.min(d.length - 1, Math.floor(p * d.length))];
-  const out = { view: VIEW, quality: QUALITY, renderer: CPU ? 'cpu' : 'gpu', serverRoot: SERVER_ROOT, frames: d.length, fps: +(1000 / (d.reduce((a, b) => a + b, 0) / d.length)).toFixed(1), p50_ms: +q(0.5).toFixed(2), p95_ms: +q(0.95).toFixed(2), max_ms: +d[d.length - 1].toFixed(2), over_16_7ms: d.filter((v) => v > 16.7).length, over_33ms: d.filter((v) => v > 33.4).length, ...r, d: undefined };
+  const out = { view: VIEW, quality: QUALITY, renderer: CPU ? 'cpu' : 'gpu', serverRoot: SERVER_ROOT, transition, frames: d.length, fps: +(1000 / (d.reduce((a, b) => a + b, 0) / d.length)).toFixed(1), p50_ms: +q(0.5).toFixed(2), p95_ms: +q(0.95).toFixed(2), max_ms: +d[d.length - 1].toFixed(2), over_16_7ms: d.filter((v) => v > 16.7).length, over_33ms: d.filter((v) => v > 33.4).length, ...r, d: undefined };
   console.log(JSON.stringify(out));
 } finally {
   await browser.close();
