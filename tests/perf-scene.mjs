@@ -27,7 +27,9 @@ for (let i = 0; i < 60; i += 1) {
   if (await fetch(`${BASE}/api/games`).then((r) => r.ok, () => false)) break;
   await sleep(200);
 }
-const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--disable-frame-rate-limit', '--disable-gpu-vsync'] });
+// RENDERER=cpu：改用軟體繪圖（SwiftShader，很慢的裝置的代表），看自動畫質會降到哪裡
+const CPU = process.env.RENDERER === 'cpu';
+const browser = await chromium.launch({ args: CPU ? ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--ignore-gpu-blocklist', '--disable-frame-rate-limit'] : ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--disable-frame-rate-limit', '--disable-gpu-vsync'] });
 try {
   const ctx = await browser.newContext(VIEW === 'm' ? { ...devices['iPhone 15'], viewport: { width: 390, height: 844 } } : { viewport: { width: 1280, height: 800 } });
   const page = await ctx.newPage();
@@ -74,7 +76,7 @@ try {
   );
   const d = r.d.slice(5).sort((a, b) => a - b);
   const q = (p) => d[Math.min(d.length - 1, Math.floor(p * d.length))];
-  const out = { view: VIEW, quality: QUALITY, serverRoot: SERVER_ROOT, frames: d.length, fps: +(1000 / (d.reduce((a, b) => a + b, 0) / d.length)).toFixed(1), p50_ms: +q(0.5).toFixed(2), p95_ms: +q(0.95).toFixed(2), max_ms: +d[d.length - 1].toFixed(2), over_16_7ms: d.filter((v) => v > 16.7).length, over_33ms: d.filter((v) => v > 33.4).length, ...r, d: undefined };
+  const out = { view: VIEW, quality: QUALITY, renderer: CPU ? 'cpu' : 'gpu', serverRoot: SERVER_ROOT, frames: d.length, fps: +(1000 / (d.reduce((a, b) => a + b, 0) / d.length)).toFixed(1), p50_ms: +q(0.5).toFixed(2), p95_ms: +q(0.95).toFixed(2), max_ms: +d[d.length - 1].toFixed(2), over_16_7ms: d.filter((v) => v > 16.7).length, over_33ms: d.filter((v) => v > 33.4).length, ...r, d: undefined };
   console.log(JSON.stringify(out));
 } finally {
   await browser.close();
