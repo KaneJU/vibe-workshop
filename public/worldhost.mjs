@@ -7,6 +7,15 @@ import { mulberry32, hashString } from './runtime.mjs';
 
 export const WORLD_LIMITS = { maxFrameMs: 8, warmupFrames: 90, toastGapMs: 2000 };
 export const ENV_METHODS = ['background', 'fog', 'ground', 'grid', 'pad', 'hemi', 'sun', 'exposure', 'reflections'];
+// 沒有物理引擎時給模組的介面：什麼都不做，但呼叫不會出錯
+const NO_PHYSICS = Object.freeze({
+  enabled: false,
+  gravity: () => -9.81,
+  material: () => {},
+  push: () => {},
+  velocity: () => [0, 0, 0],
+  setVelocity: () => {},
+});
 
 function disposeTree(obj) {
   obj.traverse?.((o) => {
@@ -16,7 +25,7 @@ function disposeTree(obj) {
   });
 }
 
-export function createWorldHost({ THREE, root, env, objects, supportBelow, player, vehicle, hud, toast, onError, now }) {
+export function createWorldHost({ THREE, root, env, objects, supportBelow, player, vehicle, physics, hud, toast, onError, now }) {
   const active = new Map(); // id -> entry
 
   // 拔掉出錯的模組，再通知外層（外層決定要不要退回上一版）
@@ -76,6 +85,7 @@ export function createWorldHost({ THREE, root, env, objects, supportBelow, playe
           if (typeof fn === 'function') vehicle.onUpdate(rec.id, guard(entry, fn));
         },
       },
+      physics: physics ? physics.apiFor(rec.id) : NO_PHYSICS,
       hud: (text) => hud(rec.id, text == null ? '' : String(text).slice(0, 80)),
       toast: (text) => {
         const t = now();
@@ -119,6 +129,7 @@ export function createWorldHost({ THREE, root, env, objects, supportBelow, playe
     }
     entry.added.clear();
     vehicle.clear(id);
+    physics?.clearModule(id); // 模組改的重力、摩擦力跟著拔掉
     hud(id, '');
     if (entry.rec.type === 'environment') env.reset();
     return true;

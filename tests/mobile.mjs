@@ -65,7 +65,7 @@ check('沒通行碼 → 顯示需要通行碼', denied.status() === 401 && (awai
 errors.length = 0; // 上一步的 401 是預期的
 
 // 2) 帶通行碼進來
-await page.goto(`${BASE}/?key=${KEY}`);
+await page.goto(`${BASE}/?physics=0&key=${KEY}`); // 經典模式的觸控拖曳疊放；物理模式的觸控在 tests/physics.mjs
 await page.waitForFunction(() => window.__ws?.loaded === true, null, { timeout: 30000 });
 check('帶通行碼進入，網址列不留通行碼', !page.url().includes('key='), page.url());
 check('左右面板收起來、不擋畫面', (await offscreen('.panel.left')) && (await offscreen('.panel.right')));

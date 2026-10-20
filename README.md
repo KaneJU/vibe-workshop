@@ -16,6 +16,7 @@ No page reloads, no rebuilds — you never leave the world.
 - **Build from what you built** — a generated part can spawn other parts with `ctx.spawn(...)`, up to 8 levels deep.
 - **Modify in place** — select an AI-made object and say *"make it red"*; the new version replaces it where it stands.
 - **Change the world itself** — say *"turn this into the surface of the moon"* or *"add gravity"*: Codex writes an environment or a rule and swaps it into the running world. Even the driving engine can be retuned by a rule (*"make the car faster and let it drift"*).
+- **Real physics, borrowed from Zelda: Tears of the Kingdom** — things fall, tumble and get knocked over. Grab them with Ultrahand, throw them, glue them into contraptions, add fans, wheels, balloons and rockets, drive what you built, and send things back with Recall.
 - **Drive, fly and wear what you build** — select an object and press ▶ 操作 [operate]: cars drive, flying cars fly, gloves go on your hand. Phones get a thumb joystick and an ⚡ action button; computers use WASD and Space.
 - **Everything persists** — the scene and the toolbox are saved automatically; close the tab and come back later.
 - **Desktop, phone and VR** — mouse and keyboard, a touch-friendly phone layout, and an experimental WebXR mode (grab and stack with controllers).
@@ -49,6 +50,8 @@ Environments and rules are `world.js` modules: `install(world)` receives a contr
 
 Parts can also declare `controls` (`drive` / `fly` / `wear`) in `meta.json` and react to the joystick with `root.userData.onControl(s, dt)` — spinning wheels, brake lights, a clenching fist.
 
+With physics on, every part is a rigid body. A part can declare `physics` (mass, friction, bounce, fixed) and a Zonai-style `device` (fan, rocket, balloon, wheel, spring, steering stick) in `meta.json`, and animate it with `root.userData.onDevice(s, dt)`. The validator also drops each part on a floor for 3 seconds and tells Codex whether it stays standing.
+
 ## Requirements
 
 - Node.js 20 or newer
@@ -75,14 +78,14 @@ The in-app labels are in Traditional Chinese; the English meaning is in brackets
 |---|---|---|
 | Look around | Drag empty space; right-drag pans; wheel zooms | One finger; two fingers zoom and pan |
 | Select | Click; Shift+click adds | Tap; turn on 多選 [multi-select] first to pick several |
-| Move / stack | Drag an object; drop it on another to stack | Press and drag |
+| Move / stack | Drag an object; drop it on another to stack (with physics on, dragging is Ultrahand — see [Physics](#physics-borrowed-from-zelda-tears-of-the-kingdom)) | Press and drag |
 | Rotate / scale | Q / E, R / F | ⟲ ⟳ ＋ － in the top bar |
 | Delete / duplicate / undo | Delete, ⌘D, ⌘Z | Top bar |
 | Save as part | G, or 存成零件 [save as part] | Top bar |
 | Build | Type and press Enter, or 🎙 for voice | Type, or use the keyboard's dictation key |
 | Modify | Select an AI-made object, tick 改造選取的物件 [modify selected], describe the change | Same |
 
-Typed or spoken commands that run locally (no AI): *save as part called turret*, *undo*, *delete*, *ungroup*, *duplicate 3* — or the Chinese equivalents 「把這疊存成零件，叫砲台」「復原」「刪除」「拆開」「複製 3 個」.
+Typed or spoken commands that run locally (no AI): *save as part called turret*, *undo*, *delete*, *ungroup*, *duplicate 3*, *glue*, *rewind*, *activate*, *physics on* — or the Chinese equivalents 「把這疊存成零件，叫砲台」「復原」「刪除」「拆開」「複製 3 個」「黏起來」「倒轉」「啟動」「打開物理」.
 
 Prompts can be written in any language Codex understands; part names follow the language of your request.
 
@@ -105,6 +108,24 @@ Safety:
 
 <img src="docs/screenshot-moon.jpg" width="220" alt="Moon environment on a phone"> <img src="docs/screenshot-drift.jpg" width="220" alt="Drift rule while driving on the moon">
 
+## Physics, borrowed from Zelda: Tears of the Kingdom
+
+The workshop runs a real rigid-body physics engine — [Rapier](https://rapier.rs/), compiled to WebAssembly and fast enough for an iPhone. Things fall, tumble, stack and get knocked over; drive the kart into a pile and it scatters. Collision shapes come from what the AI built: a convex hull per part, plus one per sub-part, so a saved stack keeps its shape. Physics is on by default; switch it with 🍎 物理 [physics] in the 🌍 世界 [world] tab.
+
+| Tears of the Kingdom | Here | Phone | Computer |
+|---|---|---|---|
+| ✋ Ultrahand | Dragging grabs the object: it floats a little and follows your finger. Let go and it keeps its momentum — flick to throw | Drag. With another finger: ▲ ▼ height, ⟲ ⟳ turn 45°, ⤾ flip | Drag; wheel or ↑ ↓, Q / E, R |
+| 🔗 Fuse | Hold one thing against another (a yellow line appears) and press 🔗: they become one rigid body. Shake the held piece to tear it off; 拆開 [ungroup] separates everything | 🔗 while holding, or 多選 [multi-select] then 🔗 黏合 [glue] | G or Space while holding; L |
+| ⚙️ Zonai devices | Fans, rockets, balloons, motorized wheels, springs and a steering stick are in the toolbox (Codex makes new ones on request). Glue them to a plank and you have a vehicle | Select it and press ⚡ 啟動 [activate], or ▶ 操作 [operate] to drive it with the joystick | Space; WASD while driving |
+| ⏪ Recall | Something that just moved travels back along its path | ⏪ 倒轉 [rewind] | T |
+| 📐 Autobuild | Save a contraption with 存成零件 [save as part]; take it out of the toolbox and it works again — wheels still turn, fans still blow. A ready-made 左納烏小車 [Zonai cart] is in the toolbox | Toolbox | Toolbox |
+
+A steering stick turns a contraption into something you can drive like a car — left and right on the joystick steer it — and keeps it upright. Balloons always lift (up to about 12 m), fans push while switched on, rockets fire for about two seconds, springs give one big hop.
+
+Rules can use physics too: *"moon gravity"* becomes `world.physics.gravity(-1.6)`, *"everything jumps"* becomes `world.physics.push(...)`. When you reopen the page, your layout stays as it was: objects sleep where they are — even floating ones — until something touches them.
+
+<img src="docs/screenshot-ultrahand.jpg" width="220" alt="Ultrahand: holding a fan against the cart, the glue button lights up"> <img src="docs/screenshot-pilot.jpg" width="220" alt="Driving the Zonai cart"> <img src="docs/screenshot-balloon.jpg" width="220" alt="Two balloons lifting a plank">
+
 ## Operate things: drive, fly, wear
 
 Select an object and press **▶ 操作** [operate], or say *drive*, *fly*, *wear* (「開車」「起飛」「戴上」).
@@ -114,6 +135,9 @@ Select an object and press **▶ 操作** [operate], or say *drive*, *fly*, *wea
 | 🚗 Drive | A chase camera follows the vehicle | Left joystick: up = throttle, down = reverse, left/right = steer | W / S, A / D |
 | 🛸 Fly | Like driving, plus altitude; it banks into turns | Joystick + ▲ ▼ | WASD + E / Q |
 | 🧤 Wear | The object sits on your right hand in first person; walk and look around | Joystick to walk, drag to look, ⟲ turns the item | WASD, drag |
+| 🕹️ Drive a contraption | For things with devices: physics does the pushing — wheels, fans and rockets | Joystick: up = power, left/right = steer; ⚡ switches the devices and fires rockets and springs | W / S, A / D, Space |
+
+Things with devices (fans, wheels…) open straight into 🕹️ drive-a-contraption mode.
 
 ⚡ (Space) is the action button. Parts made with the current spec say how they are operated and react through their own `onControl` hook: the demo kart rolls and steers its wheels, lights its brake lights and fires nitro; the demo glove clenches a fist and flares. Older parts are guessed from their names, and if the workshop can't tell, it asks. Leave with ✕ 離開 [exit] or Esc. The phone controls were designed and tested for the iPhone first.
 
@@ -172,8 +196,11 @@ npm test                 # desktop: stack, save as part, delete and undo, persis
 npm run test:mobile      # iPhone emulation over the LAN: access key, drawers, touch drag, multi-select
 npm run test:control     # iPhone: drive, switch to fly, wear, chooser, snap; plus WASD on a desktop
 npm run test:world       # iPhone: moon, gravity, drift, error isolation, rollback, slow-module watchdog, safe mode
+npm run test:physics     # iPhone: fall and stack, Ultrahand, glue, shake off, fan, balloon, cart with a steering stick, Recall, gravity rule, reload
 WITH_CODEX=1 npm test    # also runs a real build and modification (uses Codex quota)
 ```
+
+`npm test` and `test:mobile` open the page with `?physics=0` to cover the classic placement without physics; the others run with physics on.
 
 ## Project structure
 
@@ -186,6 +213,7 @@ public/app.js           the workshop: scene, selection, drag-to-stack, toolbox, 
 public/control.mjs      operation engine: drive, fly, wear (joystick, buttons, keyboard)
 public/worldhost.mjs    world-module host shared by the browser and the validator (isolation, cleanup, watchdog)
 public/worlds.mjs       the 🌍 world tab: enable / disable, rollback, safe mode
+public/physics.mjs      physics shared by the browser and the validator: Rapier bodies, Ultrahand, glue, devices, Recall
 public/index.html       page and help text
 examples/starter/       demo parts and scene loaded on first start
 launchd/                macOS background-service template and installer
@@ -198,10 +226,12 @@ tests/                  Playwright tests (desktop and phone)
 - VR mode (enter VR, grab and stack with controllers) has not been tested on a real headset yet, and you can't talk to build inside VR yet.
 - Headsets need HTTPS for WebXR, and browsers need HTTPS for the web microphone. Over plain LAN http, use the phone keyboard's dictation instead.
 - The AI can't see what it built; it only gets the validator's numbers. The next idea is to render a screenshot and let it review its own work.
-- No physics yet: objects don't fall or topple, and vehicles drive straight through other objects.
+- Collision shapes are convex hulls: a table's legs and top collide as one solid block. Things made of several sub-parts (or glued together) keep their real shape.
+- Physics runs inside each open page. Keep the workshop open on one device at a time, or two simulations will save over each other.
+- Ultrahand isn't in VR yet; VR controllers still use the simple grab-and-stack.
 - Operate mode isn't available inside VR yet.
 - Environments must keep the middle 28 m flat; vehicles don't follow terrain yet.
 
 ## License
 
-[MIT](LICENSE). Built with [three.js](https://threejs.org/) and the [OpenAI Codex CLI](https://github.com/openai/codex).
+[MIT](LICENSE). Built with [three.js](https://threejs.org/), [Rapier](https://rapier.rs/) and the [OpenAI Codex CLI](https://github.com/openai/codex).

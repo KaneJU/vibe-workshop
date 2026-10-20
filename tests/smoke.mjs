@@ -1,4 +1,5 @@
-// 工坊煙霧測試：用真的瀏覽器操作一輪（拿零件、拖曳疊放、存成零件、刪除復原、重新整理還在）
+// 工坊煙霧測試：用真的瀏覽器操作一輪（拿零件、拖曳疊放、存成零件、刪除復原、重新整理還在）。
+// 用 ?physics=0 測經典模式（沒有物理時的擺放）；物理模式（究極手、黏合、裝置）在 tests/physics.mjs。
 // WITH_CODEX=1 時再從輸入框走一次完整打造＋改造（會用到 Codex 額度）。
 // 這個測試會清空場景，所以只能對「測試用資料夾」跑，不要對正在用的工坊（:5310）跑。
 // 空資料夾第一次啟動會自動載入 examples/starter（測試用到的零件都在裡面）：
@@ -42,7 +43,7 @@ const card = (name) =>
   page.locator('.part').filter({ has: page.locator('.n', { hasText: new RegExp(`^${name}( #\\d+)?$`) }) }).first();
 const libNames = () => ws(() => window.__ws.library.map((p) => `${p.name}:${p.kind}`));
 
-await page.goto(BASE);
+await page.goto(`${BASE}/?physics=0`); // 經典模式（沒有物理）的拖曳疊放；物理模式在 tests/physics.mjs
 await page.waitForFunction(() => window.__ws?.loaded === true, null, { timeout: 30000 });
 check('頁面載入、伺服器連線', true, await page.textContent('#status'));
 

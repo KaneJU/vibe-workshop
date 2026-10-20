@@ -3,7 +3,7 @@ import { createWorldHost } from './worldhost.mjs';
 
 const TYPE_LABEL = { environment: '環境', rule: '規則' };
 
-export function createWorldManager({ THREE, root, env, objects, supportBelow, player, vehicle, hudEl, listEl, safeBtn, resetBtn, toast, api, forceSafe }) {
+export function createWorldManager({ THREE, root, env, objects, supportBelow, player, vehicle, physics, hudEl, listEl, safeBtn, resetBtn, toast, api, forceSafe }) {
   let modules = [];
   let state = { environment: null, rules: [], safeMode: false };
   const loaded = new Map();
@@ -23,6 +23,7 @@ export function createWorldManager({ THREE, root, env, objects, supportBelow, pl
     supportBelow,
     player,
     vehicle,
+    physics,
     hud: (id, text) => {
       if (text) huds.set(id, text);
       else huds.delete(id);

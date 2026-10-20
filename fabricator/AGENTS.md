@@ -86,7 +86,8 @@ the player's position and the parts library.
     head.lookAt(ctx.player.position.x, tmp.y, ctx.player.position.z); // +Z faces the target
   };
   ```
-- No physics engine: fake motion with math (bounce with `Math.abs(Math.sin(t * k))`, spin, orbit, hover).
+- The workshop has a real physics engine (see **Physics** below) that owns the root: never animate the root's position
+  or rotation. Animate children instead (spin, bob, hover, glow) — e.g. a floating core above a base, not a floating root.
 
 ## Look & quality
 
@@ -146,6 +147,51 @@ root.userData.onControl = (s, dt) => {
   front of the user's view. Use `s.action` for a satisfying move: clench a fist, snap fingers, swing, glow burst.
 - `onControl` must be cheap and must not throw; the validator runs it for 60 frames with fake input.
 
+## Physics (like Zelda: Tears of the Kingdom)
+
+When physics is on (`physics.enabled` in context.json, the default), every object is a rigid body: it falls, tumbles,
+stacks and gets knocked over; the user grabs it with "Ultrahand", throws it, glues it to other objects and rewinds it
+with "Recall".
+
+- The collision shape is made automatically: the convex hull of the part's meshes, plus one hull per spawned sub-part.
+  The shape you build is the shape that collides, so give things a real base and sensible proportions — a tall thing
+  on a tiny base will tip over.
+- Purely visual meshes — glows, light beams, holograms, auras, particles, flames, force fields — must not block things:
+  set `mesh.userData.noCollide = true` on them. (Transparent materials with opacity below 0.5 are skipped automatically.)
+- Optional `"physics"` in meta.json, every field optional:
+  `{ "mass": 12, "friction": 0.8, "bounce": 0.1, "fixed": true }`
+  - `mass` in kg (default: from volume at about 150 kg/m³, like light wood)
+  - `friction` 0–2 (default 0.7; ice ≈ 0.05, rubber ≈ 1.2)
+  - `bounce` 0–1 (default 0.05; rubber ball ≈ 0.8)
+  - `fixed: true` — never moves by itself (buildings, ramps, walls, platforms); the user can still move it by hand.
+- The validator drops your part on the floor for 3 seconds and prints `physics: … tilt=…°`. A `! 放在地上會倒` warning
+  means it falls over; fix the base or the balance unless falling over is the point.
+
+## Devices (Zonai-style): fans, rockets, balloons, wheels, springs, steering sticks
+
+Small machines that power contraptions. The user glues them onto planks, carts and crates, then switches them on with ⚡
+or drives the whole thing with the joystick. Declare it in meta.json: `"device": { "kind": "<kind>" }`
+(`force` is optional — the defaults are tuned):
+
+| kind | what it does | default `force` | build it like this |
+|---|---|---|---|
+| `fan` | pushes while switched on | 250 N | blades face −Z (the air blows out of the back), so it pushes toward +Z |
+| `rocket` | strong push for about 2 s per ⚡ | 1200 N | nozzle at −Z, pushes toward +Z |
+| `balloon` | always lifts, up to about 12 m high | 400 N | envelope on top, a small basket or hook at the bottom; keep it light: `"physics": { "mass": 1 }` |
+| `wheel` | motorized; rolls toward +Z when switched on | 400 N, `speed` 5 m/s | a disc with the axle along local X, round in the YZ plane, origin at the bottom of the tire |
+| `spring` | one big hop per ⚡ (an impulse, N·s) | 250 | pushes along +Y |
+| `steer` | steering stick: lets the user drive the contraption and keeps it upright | — | a control stick or console; the driver faces +Z |
+
+- `"direction": [x, y, z]` (optional, the part's own coordinates) changes which way a fan / rocket / spring pushes.
+  Wheels also take `"speed"` (top speed in m/s).
+- Feedback hook (recommended): `root.userData.onDevice = (s, dt) => {}` with `s = { kind, on, power (0–1), firing, t }`,
+  called every frame — spin the fan blades only while `s.on`, show a flame while `s.firing`, squash the spring right
+  after it fires (`s.t` is small). Keep it cheap; it must not throw. The physics engine spins wheels by itself.
+- Devices are compact (0.2–0.8 m). Unless the user asks for another look, use the TotK Zonai style: pale cream-grey
+  stone with teal / turquoise glowing accents.
+- A bigger machine ("a fan boat", "a car with four wheels") can spawn devices from the library
+  (`ctx.spawn('風扇')`): every spawned device keeps working inside the bigger part.
+
 ## Modes
 
 - `create` — build a new part from the request. The selection (if any) is context:
@@ -199,12 +245,21 @@ The `world` API (the only way to touch the world):
 - `world.vehicle.onUpdate((s, dt) => {})` — every frame while the user drives or flies:
   `s = { mode, object, speed, yaw, moveYaw, alt, input: { x, y, lift, action }, t }`. You may change `s.speed`,
   `s.yaw`, `s.moveYaw` (the direction it actually travels — differing from `yaw` is a drift) and `s.alt`.
+- `world.physics` — the physics engine. `world.physics.enabled` tells whether it is on.
+  `gravity(y)` sets gravity in m/s² (default −9.81, the moon ≈ −1.6) and returns the current value;
+  `material({ friction, bounce })` changes every object; `push(handle, [vx, vy, vz])` adds velocity in m/s to an object
+  (jumps, explosions, wind, magnets); `velocity(handle)` → `[x, y, z]`; `setVelocity(handle, [x, y, z])`.
+  Everything a module changes comes back automatically when it is removed.
 - `world.hud(text)` — one short status line at the top of the screen (lap time, score); `world.hud('')` clears it.
 - `world.toast(text)` — a short message (rate limited).
 - `world.random()` — deterministic random number in [0, 1).
 
 Rules for world modules: same forbidden list as parts (no `import`, `fetch`, DOM, timers, `Math.random`).
 Per-frame work must stay cheap (the host removes modules that take more than ~8 ms per frame).
-Budget: < 150k triangles, ≤ 4 lights, ≤ 30k particles. Gravity-like rules should integrate a velocity per object,
-land on `world.supportBelow(h)` and leave resting objects alone. Validate with `node validate.mjs` (it runs your
-module against a fake world with three objects — one being driven, one floating in the air).
+Budget: < 150k triangles, ≤ 4 lights, ≤ 30k particles.
+When `world.physics.enabled` is true, never move objects by writing their position: the physics engine owns them —
+use `gravity`, `push`, `setVelocity` and `material` instead ("low gravity" → `world.physics.gravity(-3)`,
+"everything jumps when I press ⚡" → `push`). Only when physics is off may a rule move objects itself: integrate a
+velocity per object, land on `world.supportBelow(h)` and leave resting objects alone. A rule can check
+`world.physics.enabled` every frame and do the right thing for both cases. Validate with `node validate.mjs` (it runs
+your module against a fake world with three objects — one being driven, one floating in the air).

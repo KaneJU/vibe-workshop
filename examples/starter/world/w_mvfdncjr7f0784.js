@@ -1,4 +1,6 @@
 export default function install(world) {
+  // 工坊的物理引擎開著時，東西本來就會掉：這個規則只讓落地多彈一點，其他交給物理引擎
+  world.physics?.material({ bounce: 0.3 }); // 物理晚點才打開也照樣生效
   const states = new WeakMap();
   const displacement = new world.THREE.Vector3();
   const origin = new world.THREE.Vector3();
@@ -17,6 +19,7 @@ export default function install(world) {
   }
   return {
     update(dt) {
+      if (world.physics?.enabled) return; // 物理關著時才自己算重力
       if (!Number.isFinite(dt) || dt <= 0) return;
       const elapsed = Math.min(dt, 0.1);
       const steps = Math.ceil(elapsed / (1 / 90));

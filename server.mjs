@@ -6,6 +6,7 @@
 // （data/access-key；第一次用 ?key= 打開會存成 cookie），免得同網段的其他裝置叫 Codex、花額度。
 
 import http from 'node:http';
+import zlib from 'node:zlib';
 import { spawn } from 'node:child_process';
 import { promises as fs, createReadStream, existsSync } from 'node:fs';
 import path from 'node:path';
@@ -22,6 +23,7 @@ const CODEX_MODEL = process.env.CODEX_MODEL || ''; // 空白＝用 ~/.codex/conf
 const NODE_BIN = process.execPath;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const THREE_DIR = path.join(ROOT, 'node_modules', 'three');
+const RAPIER_DIR = path.join(ROOT, 'node_modules', '@dimforge', 'rapier3d-compat', 'dist'); // 物理引擎（WebAssembly 內嵌在 JS 裡）
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, 'data'); // 測試時指到複本
 const PARTS_DIR = path.join(DATA_DIR, 'parts');
 const JOBS_DIR = path.join(ROOT, 'jobs');
@@ -59,6 +61,33 @@ const STARTER_DIR = path.join(ROOT, 'examples', 'starter');
 if (!existsSync(LIB_FILE) && existsSync(path.join(STARTER_DIR, 'library.json'))) {
   await fs.cp(STARTER_DIR, DATA_DIR, { recursive: true });
   log('首次啟動：已載入範例工坊（examples/starter）');
+}
+
+// 已經有工坊的人：範例新增的零件（例如物理裝置）補進工具箱；已經有的（包括自己藏起來的）不動，場景也不動
+{
+  const starter = await readJson(path.join(STARTER_DIR, 'library.json'), { parts: [] });
+  const mine = await readJson(LIB_FILE, null);
+  if (mine && Array.isArray(mine.parts)) {
+    const have = new Set(mine.parts.map((p) => p.id));
+    const added = [];
+    for (const p of starter.parts) {
+      if (have.has(p.id)) continue;
+      if (p.kind === 'generated') {
+        const src = path.join(STARTER_DIR, 'parts', `${p.id}.js`);
+        if (!existsSync(src)) continue;
+        if (!existsSync(path.join(PARTS_DIR, `${p.id}.js`))) await fs.copyFile(src, path.join(PARTS_DIR, `${p.id}.js`));
+      } else if (p.kind === 'composite' && !(p.children || []).every((c) => have.has(c.partId) || starter.parts.some((q) => q.id === c.partId))) {
+        continue;
+      }
+      mine.parts.push(p);
+      have.add(p.id);
+      added.push(p.name);
+    }
+    if (added.length) {
+      await writeJson(LIB_FILE, mine);
+      log(`工具箱補上範例零件：${added.join('、')}`);
+    }
+  }
 }
 
 if (!existsSync(WORLDS_FILE) && existsSync(path.join(STARTER_DIR, 'worlds.json'))) {
@@ -199,12 +228,15 @@ function buildContext(job) {
       kind: p.kind,
       description: p.description,
       size: p.size,
+      ...(p.device ? { device: p.device } : {}),
     })),
     base_part: job.mode === 'modify' ? 'base_part.js' : null,
+    physics: { enabled: scene.physics !== false }, // 工坊的物理引擎有沒有開
     world: worldSummary(),
     paths: {
       runtime: path.join(PUBLIC_DIR, 'runtime.mjs'),
       worldhost: path.join(PUBLIC_DIR, 'worldhost.mjs'),
+      physics: path.join(PUBLIC_DIR, 'physics.mjs'),
       partsDir: PARTS_DIR,
       libraryFile: LIB_FILE,
     },
@@ -398,6 +430,8 @@ async function runJob(job) {
     placement: report.meta.placement,
     controls: report.meta.controls || null,
     wearSlot: report.meta.wearSlot || null,
+    physics: report.meta.physics || null,
+    device: report.meta.device || null,
     stats: report.stats,
     basedOn: job.basePartId || null,
     jobId: job.id,
@@ -436,6 +470,33 @@ function send(res, status, body, headers = {}) {
     ...headers,
   });
   res.end(isObj ? JSON.stringify(body) : body);
+}
+
+// 大檔（three.js、物理引擎）第一次被要時壓縮一份放記憶體：iPhone 走 Wi-Fi 載入快很多
+const gzCache = new Map();
+async function serveGzip(req, res, baseDir, rel, cache) {
+  const file = path.resolve(baseDir, `.${path.posix.normalize(`/${rel}`)}`);
+  if (!file.startsWith(baseDir + path.sep)) return send(res, 403, 'forbidden');
+  if (!/\bgzip\b/.test(String(req.headers['accept-encoding'] || ''))) return serveFile(res, baseDir, rel, cache);
+  let entry = gzCache.get(file);
+  try {
+    const st = await fs.stat(file);
+    if (!entry || entry.mtime !== st.mtimeMs) {
+      if (st.size < 200_000) return serveFile(res, baseDir, rel, cache);
+      entry = { mtime: st.mtimeMs, buf: zlib.gzipSync(await fs.readFile(file), { level: 6 }) };
+      gzCache.set(file, entry);
+    }
+  } catch {
+    return send(res, 404, 'not found');
+  }
+  res.writeHead(200, {
+    'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
+    'Content-Encoding': 'gzip',
+    'Content-Length': entry.buf.length,
+    'Cache-Control': cache,
+    Vary: 'Accept-Encoding',
+  });
+  res.end(entry.buf);
 }
 
 async function serveFile(res, baseDir, rel, cache = 'no-cache') {
@@ -503,9 +564,11 @@ async function handleApi(req, res, url) {
     for (const it of body.instances) {
       if (!it || typeof it.id !== 'string' || !partById(it.partId)) continue;
       if (!isVec(it.position, 3) || !isVec(it.quaternion, 4) || !isVec(it.scale, 3)) continue;
-      instances.push({ id: it.id, ...cleanTransform(it) });
+      const glue = typeof it.glue === 'string' && /^g_[a-z0-9]{4,32}$/.test(it.glue) ? it.glue : null; // 黏在一起的東西共用一個 glue id
+      instances.push({ id: it.id, ...cleanTransform(it), ...(glue ? { glue } : {}) });
     }
-    scene = { instances, savedAt: new Date().toISOString() };
+    const physics = typeof body.physics === 'boolean' ? body.physics : scene.physics; // 沒帶就沿用原本的設定
+    scene = { instances, ...(typeof physics === 'boolean' ? { physics } : {}), savedAt: new Date().toISOString() };
     await writeJson(SCENE_FILE, scene);
     return send(res, 200, { ok: true, count: instances.length });
   }
@@ -662,7 +725,8 @@ const server = http.createServer(async (req, res) => {
     const p = decodeURIComponent(url.pathname);
     if (p.startsWith('/api/')) return await handleApi(req, res, url);
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'method not allowed');
-    if (p.startsWith('/vendor/three/')) return serveFile(res, THREE_DIR, p.slice('/vendor/three/'.length), 'max-age=86400');
+    if (p.startsWith('/vendor/three/')) return serveGzip(req, res, THREE_DIR, p.slice('/vendor/three/'.length), 'max-age=86400');
+    if (p.startsWith('/vendor/rapier/')) return serveGzip(req, res, RAPIER_DIR, p.slice('/vendor/rapier/'.length), 'max-age=86400');
     const pm = p.match(/^\/parts\/([a-z]_[a-z0-9]+)\.js$/);
     if (pm) return serveFile(res, PARTS_DIR, `${pm[1]}.js`, 'max-age=31536000, immutable');
     const wm = p.match(/^\/world\/(w_[a-z0-9]+)\.js$/);

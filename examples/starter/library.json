@@ -187,6 +187,377 @@
       },
       "basedOn": null,
       "createdAt": "2026-10-19T13:27:18.734Z"
+    },
+    {
+      "id": "p_mvfvs0x59da7fa",
+      "name": "風扇",
+      "kind": "generated",
+      "description": "可黏合在物件上的左納烏風扇，啟動時葉片旋轉、青綠紋路發光，向後送風推動整台裝置前進。",
+      "prompt": "做一個左納烏風扇裝置，名稱叫「風扇」：可以黏在東西上，開啟時葉片會轉、把整台東西往前推",
+      "size": [
+        0.694,
+        0.737,
+        0.34
+      ],
+      "placement": "front",
+      "controls": null,
+      "wearSlot": null,
+      "physics": {
+        "mass": 3,
+        "friction": 0.8,
+        "bounce": 0.05
+      },
+      "device": {
+        "kind": "fan",
+        "force": 250,
+        "direction": [
+          0,
+          0,
+          1
+        ]
+      },
+      "stats": {
+        "meshes": 37,
+        "triangles": 6020,
+        "lights": 0,
+        "updaters": 0,
+        "spawns": 1
+      },
+      "basedOn": null,
+      "createdAt": "2026-10-19T23:23:50.825Z"
+    },
+    {
+      "id": "p_mvfvs675cde110",
+      "name": "火箭",
+      "kind": "generated",
+      "description": "淡色石殼搭配青綠能量紋的左納烏火箭，黏上物件後按一下便向後噴火、向前推進約兩秒。",
+      "prompt": "做一個左納烏火箭裝置，名稱叫「火箭」：黏上去按一下就噴火往前衝兩秒",
+      "size": [
+        0.512,
+        0.367,
+        1.275
+      ],
+      "placement": "front",
+      "controls": null,
+      "wearSlot": null,
+      "physics": {
+        "mass": 2,
+        "friction": 0.8,
+        "bounce": 0.05
+      },
+      "device": {
+        "kind": "rocket",
+        "force": 1200,
+        "direction": [
+          0,
+          0,
+          1
+        ]
+      },
+      "stats": {
+        "meshes": 23,
+        "triangles": 1620,
+        "lights": 0,
+        "updaters": 0,
+        "spawns": 1
+      },
+      "basedOn": null,
+      "createdAt": "2026-10-19T23:23:57.665Z"
+    },
+    {
+      "id": "p_mvfvso0b1bd4e6",
+      "name": "氣球",
+      "kind": "generated",
+      "description": "青綠符紋的左納烏氣球持續提供浮力，可用底部黏合座吊起箱子。",
+      "prompt": "做一個左納烏氣球裝置，名稱叫「氣球」：會一直往上浮，可以黏在箱子上把它吊起來",
+      "size": [
+        0.59,
+        0.808,
+        0.59
+      ],
+      "placement": "front",
+      "controls": null,
+      "wearSlot": null,
+      "physics": {
+        "mass": 1,
+        "friction": 0.8,
+        "bounce": 0.05
+      },
+      "device": {
+        "kind": "balloon",
+        "force": 400
+      },
+      "stats": {
+        "meshes": 29,
+        "triangles": 6520,
+        "lights": 0,
+        "updaters": 0,
+        "spawns": 1
+      },
+      "basedOn": null,
+      "createdAt": "2026-10-19T23:24:20.747Z"
+    },
+    {
+      "id": "p_mvfvsvqx27ac2d",
+      "name": "輪子",
+      "kind": "generated",
+      "description": "淡色石質輪轂與青綠能量環的左納烏馬達輪，啟動後自行滾動，四個黏在木板上即可驅動車子。",
+      "prompt": "做一個左納烏輪子裝置，名稱叫「輪子」：會自己轉的馬達輪子，四個黏在木板上就是一台車",
+      "size": [
+        0.518,
+        0.698,
+        0.698
+      ],
+      "placement": "front",
+      "controls": null,
+      "wearSlot": null,
+      "physics": {
+        "mass": 6,
+        "friction": 1.2,
+        "bounce": 0.05
+      },
+      "device": {
+        "kind": "wheel",
+        "force": 400,
+        "speed": 5
+      },
+      "stats": {
+        "meshes": 61,
+        "triangles": 6192,
+        "lights": 0,
+        "updaters": 0,
+        "spawns": 1
+      },
+      "basedOn": null,
+      "createdAt": "2026-10-19T23:24:30.777Z"
+    },
+    {
+      "id": "p_mvfvu6qu695fe4",
+      "name": "彈簧",
+      "kind": "generated",
+      "description": "淡色石座與青綠符紋的左納烏彈簧，黏上機具後按一下即可把整台裝置向上彈起。",
+      "prompt": "做一個左納烏彈簧裝置，名稱叫「彈簧」：按一下會把整台東西彈起來",
+      "size": [
+        0.664,
+        0.571,
+        0.664
+      ],
+      "placement": "front",
+      "controls": null,
+      "wearSlot": null,
+      "physics": {
+        "mass": 4,
+        "friction": 0.9,
+        "bounce": 0.05
+      },
+      "device": {
+        "kind": "spring",
+        "force": 250,
+        "direction": [
+          0,
+          1,
+          0
+        ]
+      },
+      "stats": {
+        "meshes": 25,
+        "triangles": 4656,
+        "lights": 0,
+        "updaters": 0,
+        "spawns": 1
+      },
+      "basedOn": null,
+      "createdAt": "2026-10-19T23:25:31.686Z"
+    },
+    {
+      "id": "p_mvfvtn2i4926fc",
+      "name": "操縱桿",
+      "kind": "generated",
+      "description": "淡色石質與青綠光紋的左納烏操縱桿，黏在載具上即可駕駛整台並協助保持平衡。",
+      "prompt": "做一個左納烏操縱桿裝置，名稱叫「操縱桿」：黏在載具上就可以用搖桿駕駛整台，還會幫忙保持平衡",
+      "size": [
+        0.64,
+        0.696,
+        0.64
+      ],
+      "placement": "front",
+      "controls": "drive",
+      "wearSlot": null,
+      "physics": {
+        "mass": 5,
+        "friction": 0.9,
+        "bounce": 0.02
+      },
+      "device": {
+        "kind": "steer"
+      },
+      "stats": {
+        "meshes": 28,
+        "triangles": 4485,
+        "lights": 0,
+        "updaters": 0,
+        "spawns": 1
+      },
+      "basedOn": null,
+      "createdAt": "2026-10-19T23:25:06.186Z"
+    },
+    {
+      "id": "p_mvfvu5sya31395",
+      "name": "木板",
+      "kind": "generated",
+      "description": "長 1.6 公尺、寬 0.8 公尺、厚 0.12 公尺的厚實木板，可黏合裝置組成載具。",
+      "prompt": "做一片木板，名稱叫「木板」：大約 1.6 公尺長、0.8 公尺寬的厚木板，用來黏裝置做載具（不是裝置）",
+      "size": [
+        0.8,
+        0.12,
+        1.601
+      ],
+      "placement": "front",
+      "controls": null,
+      "wearSlot": null,
+      "physics": {
+        "mass": 18,
+        "friction": 0.8,
+        "bounce": 0.03
+      },
+      "device": null,
+      "stats": {
+        "meshes": 38,
+        "triangles": 956,
+        "lights": 0,
+        "updaters": 0,
+        "spawns": 1
+      },
+      "basedOn": null,
+      "createdAt": "2026-10-19T23:25:30.466Z"
+    },
+    {
+      "id": "c_mvfwneiy081798",
+      "name": "左納烏小車",
+      "kind": "composite",
+      "description": "四輪左納烏小車（像王國之淚的建造藍圖）：拿出來按 ▶ 操作就能開，⚡ 開關馬達",
+      "size": [
+        1.879,
+        1.155,
+        2.048
+      ],
+      "children": [
+        {
+          "partId": "p_mvfvu5sya31395",
+          "position": [
+            0,
+            0.347,
+            0.006
+          ],
+          "quaternion": [
+            0.000193,
+            -0.000718,
+            -6.7e-05,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "partId": "p_mvfvsvqx27ac2d",
+          "position": [
+            -0.68,
+            0.059,
+            0.648
+          ],
+          "quaternion": [
+            -0.032078,
+            -0.00063,
+            -0.000289,
+            0.999485
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "partId": "p_mvfvsvqx27ac2d",
+          "position": [
+            0.678,
+            0.061,
+            0.678
+          ],
+          "quaternion": [
+            -0.072552,
+            -0.000686,
+            2.4e-05,
+            0.997364
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "partId": "p_mvfvsvqx27ac2d",
+          "position": [
+            -0.678,
+            0.064,
+            -0.551
+          ],
+          "quaternion": [
+            -0.09331,
+            -0.000859,
+            -6.4e-05,
+            0.995637
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "partId": "p_mvfvsvqx27ac2d",
+          "position": [
+            0.68,
+            0.058,
+            -0.594
+          ],
+          "quaternion": [
+            -0.027391,
+            -0.000716,
+            -8.7e-05,
+            0.999625
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "partId": "p_mvfvtn2i4926fc",
+          "position": [
+            0,
+            0.467,
+            -0.244
+          ],
+          "quaternion": [
+            0.000193,
+            -0.000718,
+            -6.7e-05,
+            1
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ]
+        }
+      ],
+      "createdAt": "2026-10-19T23:48:14.794Z"
     }
   ]
 }

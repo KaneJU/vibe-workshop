@@ -197,7 +197,8 @@ const back = await ws((id) => {
   const o = window.__ws.instances.get(id).object;
   return { inWorld: o.parent?.name === 'world', scale: o.scale.x, bottom: window.__ws.worldBox(window.__ws.instances.get(id)).min.y };
 }, gloveId);
-check('離開 → 手套放回地上、恢復原本大小', back.inWorld && Math.abs(back.scale - 1) < 1e-6 && back.bottom > -0.01, JSON.stringify(back));
+// 物理開著時手套落地會躺平，外框底部會略低於 0；在 ±8 公分內就是「放回地上」
+check('離開 → 手套放回地上、恢復原本大小', back.inWorld && Math.abs(back.scale - 1) < 1e-6 && Math.abs(back.bottom) < 0.08, JSON.stringify(back));
 
 // ---- 沒宣告的東西 → 跳出選單 ----
 await ws(() => window.__ws.clearSelection());
@@ -238,6 +239,8 @@ const kartAfter = await ws((id) => window.__ws.instances.get(id)?.object.positio
 check('重新整理後，車子還在開過去的位置', !!kartAfter && Math.hypot(kartAfter[0] - kartBefore[0], kartAfter[2] - kartBefore[2]) < 0.05);
 
 // ---- 電腦鍵盤（次要） ----
+// 先關掉手機頁：兩頁同時開著，兩邊都在跑物理、都在存檔（使用上也一樣，同一時間只開一台）
+await page.close();
 const desk = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 desk.on('pageerror', (e) => errors.push(`desktop pageerror: ${e.message}`));
 await desk.addInitScript(() => localStorage.setItem('vw_help_seen', '1'));
@@ -249,7 +252,10 @@ await desk.evaluate((id) => {
 }, kartId);
 const d0 = await desk.evaluate(() => window.__ws.engine.session.obj.position.toArray());
 await desk.keyboard.down('w');
-await desk.waitForTimeout(1200);
+// 軟體算圖每秒只有幾格：等它真的開出 1 公尺，不死等固定時間
+await desk
+  .waitForFunction((p) => { const o = window.__ws.engine.session?.obj.position; return o && Math.hypot(o.x - p[0], o.z - p[2]) > 1; }, d0, { timeout: 10000 })
+  .catch(() => {});
 await desk.keyboard.up('w');
 const d1 = await desk.evaluate(() => window.__ws.engine.session.obj.position.toArray());
 await desk.keyboard.press('Escape');

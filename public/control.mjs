@@ -1,8 +1,8 @@
-// 操作引擎：開車、飛行、穿戴。
+// 操作引擎：開車、飛行、穿戴，以及駕駛黏起來的裝置（物理引擎負責推動，這裡只管輸入與追焦鏡頭）。
 // 輸入（手機搖桿／按鈕、電腦鍵盤）統一寫進 engine.input，每一格 update() 依模式推動物件與鏡頭。
 // 零件可以在 root.userData.onControl(s, dt) 自己做細節（輪子轉、握拳、噴火）；沒有的話引擎用通用效果。
 
-export const MODES = { drive: '開車', fly: '飛行', wear: '穿戴' };
+export const MODES = { drive: '開車', fly: '飛行', wear: '穿戴', pilot: '駕駛' };
 
 const FLY_WORDS = /飛天|飛行|飛機|飛碟|飛船|會飛|能飛|可以飛|起飛|太空船|火箭|無人機|\b(ufo|plane|airplane|jet|drone|flying|hover\w*|spaceship|rocket)\b/i;
 const DRIVE_WORDS = /車|卡丁|坦克|機車|摩托|巴士|特斯拉|\b(car|cars|truck|kart|go-kart|tank|bike|motorbike|bus|vehicle|tesla|buggy|jeep)\b/i;
@@ -22,7 +22,7 @@ export function guessMode(part) {
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
-export function createControlEngine({ THREE, scene, camera, controls, world, worldBox, dropToSupport, toast, instancesList }) {
+export function createControlEngine({ THREE, scene, camera, controls, world, worldBox, dropToSupport, toast, instancesList, pilot }) {
   const input = { x: 0, y: 0, lift: 0, actionHeld: false, actionPressed: false };
   const effects = [];
   const UP = new THREE.Vector3(0, 1, 0);
@@ -153,7 +153,13 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
       },
       fov: camera.fov,
     };
-    if (mode === 'wear') {
+    if (mode === 'pilot') {
+      // 駕駛：物件由物理引擎推（風扇、輪子、火箭），這裡不動它，只接管鏡頭
+      s.camFwd = null;
+      controls.enabled = false;
+      camera.fov = 55;
+      camera.updateProjectionMatrix();
+    } else if (mode === 'wear') {
       // 戴在右手：縮到約 30 公分、掛在鏡頭前右下方，+Z（手指方向）朝前
       const rest = inst.restBox.getSize(new THREE.Vector3());
       const restCenter = inst.restBox.getCenter(new THREE.Vector3());
@@ -194,7 +200,12 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
   function stop() {
     if (!s) return;
     const { obj, inst, mode } = s;
-    if (mode === 'wear') {
+    if (mode === 'pilot') {
+      controls.enabled = true;
+      camera.fov = s.fov;
+      camera.updateProjectionMatrix();
+      if (s.lastCenter) controls.target.copy(s.lastCenter);
+    } else if (mode === 'wear') {
       // 放回使用者前方的地上，恢復原本大小
       camera.remove(obj);
       world.add(obj);
@@ -413,11 +424,26 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
     if (input.actionPressed && s.snapper) snap();
   }
 
+  // 駕駛：輸入交給物理引擎（pilot 回傳整台東西的中心、前方、大小），鏡頭在後上方跟著
+  function updatePilot(dt) {
+    const f = pilot?.(s.inst, input, dt);
+    if (!f) return;
+    s.lastCenter = f.center;
+    s.camFwd = s.camFwd ? s.camFwd.lerp(f.forward, 1 - Math.exp(-3 * dt)).normalize() : f.forward.clone();
+    const dist = clamp(Math.max(f.size.x, f.size.z) * 2.2, 3.5, 16);
+    const height = clamp(f.size.y * 1.6 + 1.2, 1.6, 8);
+    desired.set(f.center.x - s.camFwd.x * dist, f.center.y + height, f.center.z - s.camFwd.z * dist);
+    camera.position.lerp(desired, 1 - Math.exp(-6 * dt));
+    look.copy(f.center).addScaledVector(s.camFwd, 2);
+    camera.lookAt(look);
+  }
+
   function update(dt) {
     updateEffects(dt);
     if (s) {
       s.t += dt;
       if (s.mode === 'wear') updateWear(dt);
+      else if (s.mode === 'pilot') updatePilot(dt);
       else updateVehicle(dt);
     }
     input.actionPressed = false;

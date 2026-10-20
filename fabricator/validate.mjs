@@ -34,6 +34,10 @@ if (isMainThread) {
         const s = report.stats;
         console.log(`  meshes=${s.meshes} triangles=${s.triangles} lights=${s.lights} animated=${s.updaters} spawns=${s.spawns}`);
       }
+      if (report.physics) {
+        const p = report.physics;
+        console.log(`  physics: pieces=${p.pieces} mass=${p.mass}kg tilt=${p.tiltDeg}° slid=${p.slid}m${p.devices.length ? ` devices=${p.devices.join(',')}` : ''}`);
+      }
     }
     process.exit(report.ok ? 0 : 1);
   };
@@ -81,6 +85,7 @@ async function runChecks(dir) {
     return done();
   }
 
+  const physMod = context.paths?.physics ? await import(pathToFileURL(context.paths.physics).href) : null;
   const hasPart = existsSync(path.join(dir, 'part.js'));
   const hasWorld = existsSync(path.join(dir, 'world.js'));
   if (hasPart && hasWorld) {
@@ -114,6 +119,7 @@ async function runChecks(dir) {
       if (meta.wearSlot != null && !['right_hand', 'left_hand', 'head'].includes(meta.wearSlot)) {
         errors.push('meta.json 的 wearSlot 只能是 right_hand / left_hand / head');
       }
+      checkPhysicsMeta(meta, physMod, errors, warnings);
       const type = meta.type == null ? (hasWorld ? null : 'part') : meta.type;
       if (hasWorld && !['environment', 'rule'].includes(type)) {
         errors.push('寫了 world.js，meta.json 的 type 要是 "environment" 或 "rule"');
@@ -129,6 +135,8 @@ async function runChecks(dir) {
         placement: meta.placement,
         controls: meta.controls || null,
         wearSlot: meta.controls === 'wear' ? meta.wearSlot || 'right_hand' : null,
+        physics: physMod && !hasWorld ? physMod.normalizePhysics(meta.physics) : null,
+        device: physMod && !hasWorld ? physMod.normalizeDevice(meta.device) : null,
       };
     } catch (e) {
       errors.push(`meta.json 不是合法 JSON：${e.message}`);
@@ -311,7 +319,142 @@ async function runChecks(dir) {
       warnings.push(`物件沒有置中（中心在 x=${r3(cx)}, z=${r3(cz)}）`);
     }
   }
+  if (physMod && !errors.length) {
+    try {
+      await checkPhysics({ THREE, root, meta, library, physMod, built, errors, warnings, report });
+    } catch (e) {
+      warnings.push(`物理試放沒跑成（${e.message}），零件本身沒問題`);
+    }
+  }
   return done();
+}
+
+// meta.json 的 physics／device 格式
+function checkPhysicsMeta(meta, physMod, errors, warnings) {
+  const ph = meta.physics;
+  if (ph != null) {
+    if (typeof ph !== 'object' || Array.isArray(ph)) errors.push('meta.json 的 physics 要是物件，例如 { "mass": 20, "friction": 0.8 }');
+    else {
+      for (const k of Object.keys(ph)) if (!['mass', 'friction', 'bounce', 'fixed'].includes(k)) warnings.push(`physics.${k} 不認得（只有 mass／friction／bounce／fixed）`);
+      if (ph.mass != null && !(Number.isFinite(ph.mass) && ph.mass >= 0.1 && ph.mass <= 20000)) errors.push('physics.mass 要是 0.1–20000 的數字（公斤）');
+      if (ph.friction != null && !(Number.isFinite(ph.friction) && ph.friction >= 0 && ph.friction <= 2)) errors.push('physics.friction 要在 0–2');
+      if (ph.bounce != null && !(Number.isFinite(ph.bounce) && ph.bounce >= 0 && ph.bounce <= 1)) errors.push('physics.bounce 要在 0–1');
+      if (ph.fixed != null && typeof ph.fixed !== 'boolean') errors.push('physics.fixed 要是 true 或 false');
+    }
+  }
+  const d = meta.device;
+  if (d == null || !physMod) return;
+  const kinds = Object.keys(physMod.DEVICE_KINDS);
+  if (typeof d !== 'object' || Array.isArray(d) || !kinds.includes(d.kind)) {
+    errors.push(`meta.json 的 device 要是 { "kind": ${kinds.map((k) => `"${k}"`).join(' | ')} }`);
+    return;
+  }
+  const [lo, hi] = physMod.DEVICE_FORCE_RANGE[d.kind];
+  if (d.force != null && d.kind !== 'steer' && !(Number.isFinite(d.force) && d.force >= lo && d.force <= hi)) {
+    errors.push(`device.force（${d.kind}）要在 ${lo}–${hi}`);
+  }
+  if (d.speed != null && !(d.kind === 'wheel' && Number.isFinite(d.speed) && d.speed >= 0.5 && d.speed <= 30)) {
+    errors.push('device.speed 只有輪子用，要在 0.5–30（公尺／秒）');
+  }
+  if (d.direction != null && !(Array.isArray(d.direction) && d.direction.length === 3 && d.direction.every(Number.isFinite) && Math.hypot(...d.direction) > 0.01)) {
+    errors.push('device.direction 要是 [x, y, z]（零件自己的座標）');
+  }
+  for (const k of Object.keys(d)) if (!['kind', 'force', 'speed', 'direction'].includes(k)) warnings.push(`device.${k} 不認得（只有 kind／force／speed／direction）`);
+}
+
+// ---------------- 物理試放 ----------------
+// 用跟瀏覽器同一套碰撞形狀（public/physics.mjs 的 collectPieces），放在地上跑 3 秒：
+// 會不會倒、會不會穿過地板、裝置的形狀合不合理、onDevice 鉤子會不會出錯。
+async function checkPhysics({ THREE, root, meta, library, physMod, built, errors, warnings, report }) {
+  const { collectPieces, hullDesc, normalizeDevice, normalizePhysics, DEVICE_KINDS, PHYS } = physMod;
+  const libDevice = new Map((library.parts || []).map((p) => [p.id, normalizeDevice(p.device)]));
+  const myDevice = normalizeDevice(meta?.device);
+  const deviceOf = (pid) => (pid === '__candidate__' ? myDevice : libDevice.get(pid) || null);
+  root.position.set(0, 0, 0);
+  root.quaternion.identity();
+  root.scale.set(1, 1, 1);
+  const pieces = collectPieces(THREE, root, { deviceOf });
+  if (!pieces.length) {
+    errors.push('沒有能碰撞的實體形狀：全部都是透明特效或標了 noCollide（至少要有一個實心的 mesh）');
+    return;
+  }
+  const ph = normalizePhysics(meta?.physics) || {};
+  const R = (await import('@dimforge/rapier3d-compat')).default;
+  await R.init();
+  const world = new R.World({ x: 0, y: PHYS.gravity, z: 0 });
+  world.timestep = 1 / 60;
+  const ground = world.createRigidBody(R.RigidBodyDesc.fixed());
+  world.createCollider(R.ColliderDesc.cuboid(100, 0.5, 100).setTranslation(0, -0.5, 0).setFriction(0.8), ground);
+  const body = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(0, 0.02, 0).setLinearDamping(PHYS.linearDamping).setAngularDamping(PHYS.angularDamping));
+  const totalBox = pieces.reduce((n, p) => n + Math.max(p.size.x * p.size.y * p.size.z, 1e-6), 0);
+  for (const p of pieces) {
+    const cd = hullDesc(R, p.points).setFriction(ph.friction ?? PHYS.friction).setRestitution(ph.bounce ?? PHYS.bounce);
+    const vol = Math.max(p.size.x * p.size.y * p.size.z, 1e-6);
+    if (Number.isFinite(ph.mass)) cd.setMass(Math.max(0.05, (ph.mass * vol) / totalBox));
+    else if (p.device) cd.setMass(DEVICE_KINDS[p.device.kind].mass);
+    else cd.setDensity(PHYS.density);
+    world.createCollider(cd, body);
+  }
+  const mass = body.mass();
+  let maxSpeed = 0;
+  let bad = false;
+  for (let f = 0; f < 180; f += 1) {
+    world.step();
+    const v = body.linvel();
+    const t = body.translation();
+    if (![v.x, v.y, v.z, t.x, t.y, t.z].every(Number.isFinite)) {
+      bad = true;
+      break;
+    }
+    maxSpeed = Math.max(maxSpeed, Math.hypot(v.x, v.y, v.z));
+  }
+  const t = body.translation();
+  const r = body.rotation();
+  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w));
+  const tiltDeg = Math.round((Math.acos(Math.min(1, Math.max(-1, up.y))) * 180) / Math.PI);
+  const slid = Math.round(Math.hypot(t.x, t.z) * 100) / 100;
+  world.free();
+  const kinds = pieces.filter((p) => p.device).map((p) => p.device.kind);
+  report.physics = { pieces: pieces.length, mass: Math.round(mass * 10) / 10, tiltDeg, slid, devices: kinds };
+  if (bad) errors.push('物理試放時數值爆掉（NaN）：形狀可能退化成一條線或一個點');
+  else if (t.y < -0.5) errors.push('物理試放時穿過了地板：碰撞形狀有問題');
+  else if (maxSpeed > 30) errors.push(`物理試放時彈飛出去（${Math.round(maxSpeed)} m/s）`);
+  const loose = ph.fixed || myDevice?.kind === 'wheel' || myDevice?.kind === 'balloon';
+  if (!bad && !loose && tiltDeg > 25) {
+    warnings.push(`放在地上會倒（傾斜 ${tiltDeg}°）：底座加寬或把重心放低；本來就該倒（例如球、棍子）就不用管`);
+  }
+  if (!bad && !loose && slid > 0.4) warnings.push(`放在地上會自己滾走（${slid} m）`);
+
+  // 裝置：形狀與回饋
+  if (myDevice) {
+    const main = pieces[0];
+    if (myDevice.kind === 'wheel') {
+      const { x, y, z } = main.size;
+      if (Math.abs(y - z) / Math.max(y, z) > 0.25) warnings.push(`輪子要是圓的：軸沿 X，在 YZ 平面是圓形（現在 y=${y.toFixed(2)}、z=${z.toFixed(2)}）`);
+      if (x > Math.max(y, z)) warnings.push('輪子太厚了：X（輪軸方向）應該比直徑小');
+    }
+    if (myDevice.kind === 'balloon') {
+      const lift = myDevice.force;
+      if (mass * 9.81 >= lift) warnings.push(`氣球自己就太重（${mass.toFixed(1)} kg），浮力 ${lift} N 拉不動：physics.mass 設 1 左右`);
+    }
+    const hook = built.object.userData?.onDevice;
+    if (hook !== undefined && typeof hook !== 'function') errors.push('userData.onDevice 必須是函式');
+    if (typeof hook === 'function') {
+      for (let f = 0; f < 60; f += 1) {
+        const st = { kind: myDevice.kind, on: f >= 10, power: f >= 10 ? 1 : 0, firing: f >= 10 && f < 40, t: f / 60 };
+        try {
+          hook.call(built.object, st, 1 / 60);
+        } catch (e) {
+          errors.push(`userData.onDevice() 執行錯誤：${e.message}`);
+          break;
+        }
+      }
+    } else if (['fan', 'rocket', 'spring'].includes(myDevice.kind)) {
+      warnings.push(`${DEVICE_KINDS[myDevice.kind].label}沒有 userData.onDevice：開關時看不出來（例如風扇葉片轉、火箭噴火）`);
+    }
+  } else if (built.object.userData?.onDevice) {
+    warnings.push('有 onDevice 但 meta.json 沒寫 device，鉤子不會被呼叫');
+  }
 }
 
 // ---------------- 世界模組（環境／規則）驗收 ----------------
@@ -382,6 +525,34 @@ async function checkWorld(dir, context, meta, errors, warnings, report, done) {
   };
   const huds = [];
   const runtimeErrors = [];
+  const physCalls = [];
+  const vec3 = (v) => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
+  const fakePhysics = {
+    get enabled() {
+      return true;
+    },
+    gravity(y) {
+      physCalls.push('gravity');
+      if (y != null && !Number.isFinite(y)) runtimeErrors.push('world.physics.gravity(y) 要給數字（公尺／秒²，向下是負的）');
+      return Number.isFinite(y) ? y : -9.81;
+    },
+    material(o) {
+      physCalls.push('material');
+      if (o && typeof o !== 'object') runtimeErrors.push('world.physics.material({ friction, bounce }) 要給物件');
+    },
+    push(h, v) {
+      physCalls.push('push');
+      if (!h || !vec3(v)) runtimeErrors.push('world.physics.push(handle, [vx, vy, vz]) 要給物件和三個數字');
+    },
+    velocity() {
+      physCalls.push('velocity');
+      return [0, 0, 0];
+    },
+    setVelocity(h, v) {
+      physCalls.push('setVelocity');
+      if (!h || !vec3(v)) runtimeErrors.push('world.physics.setVelocity(handle, [vx, vy, vz]) 要給物件和三個數字');
+    },
+  };
   const host = createWorldHost({
     THREE,
     root,
@@ -390,6 +561,7 @@ async function checkWorld(dir, context, meta, errors, warnings, report, done) {
     supportBelow: () => 0,
     player,
     vehicle,
+    physics: { apiFor: () => fakePhysics, clearModule: () => {} },
     hud: (_id, text) => text && huds.push(text),
     toast: () => {},
     onError: (_rec, e, why) => runtimeErrors.push(`${why === 'slow' ? '太耗效能' : '執行時出錯'}：${e?.message || e}`),
@@ -488,7 +660,7 @@ async function checkWorld(dir, context, meta, errors, warnings, report, done) {
   if (points > 30_000) errors.push(`粒子太多（${points}，上限 30,000）`);
   if (meta?.type === 'environment' && envUsed === 0 && added === 0) errors.push('環境模組沒有改任何環境設定，也沒有放任何東西');
   if (meta?.type === 'rule' && envRefused) warnings.push('規則模組呼叫了 world.env，會被忽略；要改天空、地面請做成環境模組');
-  if (meta?.type === 'rule' && !hasUpdate && hookCount === 0 && Object.keys(tunes).length === 0 && added === 0) {
+  if (meta?.type === 'rule' && !hasUpdate && hookCount === 0 && Object.keys(tunes).length === 0 && added === 0 && !physCalls.length) {
     warnings.push('這個規則好像什麼都沒做');
   }
   report.kind = meta?.type;
@@ -502,6 +674,7 @@ async function checkWorld(dir, context, meta, errors, warnings, report, done) {
     vehicleHooks: hookCount,
     tuning: Object.keys(tunes),
     hud: huds.length > 0,
+    physics: [...new Set(physCalls)],
     centerBump: Math.round(bump * 100) / 100,
   };
   return done();

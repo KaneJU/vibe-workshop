@@ -5,6 +5,7 @@ import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFa
 import { createRuntime } from './runtime.mjs';
 import { createControlEngine, guessMode, MODES } from './control.mjs';
 import { createWorldManager } from './worlds.mjs';
+import { createPhysics, PHYS } from './physics.mjs';
 
 const $ = (sel) => document.querySelector(sel);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -178,6 +179,32 @@ const engine = createControlEngine({
   dropToSupport: (i) => dropToSupport(i),
   toast: (m) => toast(m),
   instancesList: () => [...instances.values()],
+  pilot: (inst, input, dt) => phys.pilot(inst, input, dt),
+});
+
+// 物理引擎（借鏡王國之淚）：Rapier 剛體＋究極手＋黏合＋左納烏式裝置＋時光倒轉。
+// Rapier 是 WebAssembly（約 1.6 MB），打開物理時才載入；載入失敗就維持原本的擺放模式。
+const urlPhysics = new URLSearchParams(window.location.search).get('physics'); // ?physics=0／1：只影響這次開啟，不寫進存檔
+let physicsOn = false;
+const phys = createPhysics({
+  THREE,
+  loadRapier: async () => {
+    const R = (await import('@dimforge/rapier3d-compat')).default;
+    await R.init();
+    return R;
+  },
+  instances: () => instances,
+  partOf: (id) => runtime.parts.get(id),
+  boxOf: (i) => worldBox(i),
+  nameOf: (i) => partName(i.partId),
+  controlled: () => (engine.active && engine.mode !== 'pilot' ? engine.session.inst : null),
+  fxRoot: scene,
+  camera,
+  respawnAt: () => playerFloor().addScaledVector(forwardFlat(), 2).setY(1.5),
+  onSettled: () => scheduleSave(),
+  onMoving: () => scheduleSave(),
+  toast: (m) => toast(m),
+  now: () => performance.now(),
 });
 
 // 世界模組：環境（天空地面燈光天氣）與規則（重力、玩法、開車手感），由 Codex 寫、當場裝卸
@@ -189,7 +216,7 @@ function objectHandles() {
     object: i.object,
     box: () => worldBox(i),
     controlled: i === held,
-    dragging: !!drag && drag.moving.includes(i),
+    dragging: (!!drag && !!drag.moving?.includes(i)) || !!phys.holding?.members.includes(i),
   }));
 }
 function supportBelowHandle(h) {
@@ -207,6 +234,7 @@ const worlds = createWorldManager({
   supportBelow: (h) => supportBelowHandle(h),
   player: { position: player.position, forward: () => forwardFlat() },
   vehicle: engine.vehicle,
+  physics: phys,
   hudEl: $('#worldHud'),
   listEl: $('#worldList'),
   safeBtn: $('#safeBtn'),
@@ -272,7 +300,15 @@ function addInstance(rec, { save = true } = {}) {
     }
   });
   world.add(object);
-  const inst = { id: rec.id, partId: rec.partId, object, restBox, updaters: built.updaters, bornAt: now() };
+  const inst = {
+    id: rec.id,
+    partId: rec.partId,
+    object,
+    restBox,
+    updaters: built.updaters,
+    bornAt: now(),
+    glue: typeof rec.glue === 'string' ? rec.glue : null, // 黏在一起的東西共用一個 glue id
+  };
   instances.set(rec.id, inst);
   const problems = [...built.errors, ...built.warnings];
   if (problems.length) toast(`⚠️ ${partName(rec.partId)}：${problems[0]}`);
@@ -310,13 +346,14 @@ function snapshot() {
   const q = new THREE.Quaternion();
   const s = new THREE.Vector3();
   return [...instances.values()].map((i) => {
+    const glue = i.glue ? { glue: i.glue } : {};
     const held = engine.savedTransformFor(i);
     if (held) {
-      return { id: i.id, partId: i.partId, position: held.position.toArray(), quaternion: held.quaternion.toArray(), scale: held.scale.toArray() };
+      return { id: i.id, partId: i.partId, position: held.position.toArray(), quaternion: held.quaternion.toArray(), scale: held.scale.toArray(), ...glue };
     }
     i.object.updateMatrixWorld(true);
     i.object.matrixWorld.decompose(p, q, s);
-    return { id: i.id, partId: i.partId, position: p.toArray(), quaternion: q.toArray(), scale: s.toArray() };
+    return { id: i.id, partId: i.partId, position: p.toArray(), quaternion: q.toArray(), scale: s.toArray(), ...glue };
   });
 }
 
@@ -348,7 +385,8 @@ async function saveNow(keepalive = false) {
   clearTimeout(saveTimer);
   if (!loaded) return; // 還沒載入完就存，會把存檔洗成空的
   try {
-    await api('PUT', '/api/scene', { instances: snapshot() }, keepalive ? { keepalive: true } : {});
+    const body = { instances: snapshot(), ...(urlPhysics === null ? { physics: physicsOn } : {}) };
+    await api('PUT', '/api/scene', body, keepalive ? { keepalive: true } : {});
   } catch (e) {
     toast(`⚠️ 存檔失敗：${e.message}`);
   }
@@ -385,13 +423,16 @@ function deselect(id) {
 function clearSelection() {
   for (const id of [...selection]) deselect(id);
 }
+// 黏在一起的東西是一體：點其中一個就整組選起來
+const glueMembers = (inst) => (!inst ? [] : inst.glue ? [...instances.values()].filter((i) => i.glue === inst.glue) : [inst]);
 function selectOnly(id) {
   clearSelection();
-  addToSelection(id);
+  for (const i of glueMembers(instances.get(id))) addToSelection(i.id);
 }
 function toggleSelect(id) {
-  if (selection.has(id)) deselect(id);
-  else addToSelection(id);
+  const group = glueMembers(instances.get(id));
+  if (selection.has(id)) group.forEach((i) => deselect(i.id));
+  else group.forEach((i) => addToSelection(i.id));
 }
 
 function updateSelectionUI() {
@@ -404,7 +445,11 @@ function updateSelectionUI() {
     if (!['undo', 'multi'].includes(b.dataset.act)) b.disabled = !sel.length;
   });
   const hasCombo = sel.some((i) => partKind(i.partId) === 'composite');
-  document.querySelectorAll('[data-act=ungroup]').forEach((b) => (b.disabled = !hasCombo));
+  const hasGlue = sel.some((i) => i.glue);
+  document.querySelectorAll('[data-act=ungroup]').forEach((b) => (b.disabled = !hasCombo && !hasGlue));
+  document.querySelectorAll('[data-act=glue]').forEach((b) => (b.disabled = clustersOf(sel).length < 2));
+  document.querySelectorAll('[data-act=recall]').forEach((b) => (b.disabled = !sel.length || !phys.ready));
+  document.querySelectorAll('[data-act=power]').forEach((b) => (b.disabled = !phys.ready || !sel.some((i) => phys.hasDevices(i))));
   $('#mobileBar').classList.toggle('show', sel.length > 0 || multiMode);
   const canModify = sel.length === 1 && partKind(sel[0].partId) === 'generated';
   $('#modifyWrap').hidden = !canModify;
@@ -438,8 +483,14 @@ function instanceOf(obj) {
   while (o && o.parent !== world) o = o.parent;
   return o ? instances.get(o.userData.instanceId) : null;
 }
+// 看不見的東西（例如被彈指藏起來的）點不到、也不能當支撐面
+function isShown(o) {
+  for (let p = o; p; p = p.parent) if (!p.visible) return false;
+  return true;
+}
 function pickFromRaycaster() {
   for (const h of raycaster.intersectObjects(world.children, true)) {
+    if (!isShown(h.object)) continue;
     const inst = instanceOf(h.object);
     if (inst) return { inst, point: h.point };
   }
@@ -449,7 +500,7 @@ function pickFromRaycaster() {
 // 在 (x, z) 這個位置、這麼大的底面，往下看最高的支撐面在哪（沒有東西就是地板 0）
 function supportHeight(x, z, half, exclude) {
   const targets = [];
-  for (const i of instances.values()) if (!exclude.has(i)) targets.push(i.object);
+  for (const i of instances.values()) if (!exclude.has(i) && i.object.visible) targets.push(i.object);
   if (!targets.length) return 0;
   let best = 0;
   const probe = new THREE.Vector3();
@@ -488,6 +539,12 @@ renderer.domElement.addEventListener(
       return;
     }
     if (!selection.has(hit.inst.id)) selectOnly(hit.inst.id);
+    if (phys.ready) {
+      // 究極手：拖動才抓起來（只是點一下＝選取）
+      drag = { physics: true, inst: hit.inst, point: hit.point.clone(), started: false, before: JSON.stringify(snapshot()), pointerId: e.pointerId, trail: [] };
+      renderer.domElement.setPointerCapture(e.pointerId);
+      return;
+    }
     const moving = selectedInstances();
     const box = worldBox(hit.inst);
     const bottom = new THREE.Vector3((box.min.x + box.max.x) / 2, box.min.y, (box.min.z + box.max.z) / 2);
@@ -507,6 +564,10 @@ renderer.domElement.addEventListener(
 
 renderer.domElement.addEventListener('pointermove', (e) => {
   if (!drag) return;
+  if (drag.physics) {
+    handOn(e);
+    return;
+  }
   if (!drag.started) {
     if (Math.hypot(e.clientX - down.x, e.clientY - down.y) < 4) return;
     drag.started = true;
@@ -515,7 +576,7 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   raycaster.setFromCamera(pointer, camera);
   const exclude = new Set(drag.moving);
   const targets = [floor];
-  for (const i of instances.values()) if (!exclude.has(i)) targets.push(i.object);
+  for (const i of instances.values()) if (!exclude.has(i) && i.object.visible) targets.push(i.object);
   const hit = raycaster.intersectObjects(targets, true)[0];
   const p = hit ? hit.point.clone() : raycaster.ray.intersectPlane(FLOOR_PLANE, new THREE.Vector3());
   if (!p) return;
@@ -525,7 +586,20 @@ renderer.domElement.addEventListener('pointermove', (e) => {
 });
 
 function endPointer(e) {
-  if (drag) {
+  if (drag?.physics) {
+    if (drag.started) {
+      phys.release();
+      pushUndo(drag.before);
+      scheduleSave();
+    }
+    hideHoldHud();
+    try {
+      renderer.domElement.releasePointerCapture(drag.pointerId);
+    } catch {
+      /* 已釋放 */
+    }
+    drag = null;
+  } else if (drag) {
     if (drag.started) {
       pushUndo(drag.before);
       scheduleSave();
@@ -545,6 +619,188 @@ function endPointer(e) {
 renderer.domElement.addEventListener('pointerup', endPointer);
 renderer.domElement.addEventListener('pointercancel', endPointer);
 
+// ---------------- 究極手（物理開著時的拖曳） ----------------
+// 手指拖動＝抓起來（離地 20 公分飄著）、在同一個高度平面上移動；▲▼ 升降、⟲⟳ 轉 45°、⤾ 翻面；
+// 碰到或靠近別的東西時 🔗 會亮，按下去就黏上；抓著搖一搖（左右來回甩）就把這一塊從黏著的整組拆下來；放手會順著手勢丟出去。
+
+let holdLiftDir = 0;
+function handOn(e) {
+  if (!drag.started) {
+    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) < 4) return;
+    drag.started = true;
+    if (!phys.grab(drag.inst, drag.point)) {
+      drag.physics = false; // 正在倒轉之類的：這次不抓
+      drag = null;
+      return;
+    }
+    drag.planeY = drag.point.y + PHYS.holdLift;
+    drag.lift = 0;
+    showHoldHud(e.clientX);
+  }
+  setPointer(e);
+  raycaster.setFromCamera(pointer, camera);
+  drag.ray = raycaster.ray.clone();
+  updateHoldTarget();
+  // 畫面一卡，瀏覽器會把好幾個移動合併成一個事件；搖一搖要看合併前的每一個點，不然來回甩會被吃掉
+  const evs = e.getCoalescedEvents?.() || [];
+  for (const ce of evs.length ? evs : [e]) detectShake(ce);
+}
+
+function updateHoldTarget() {
+  if (!drag?.ray) return;
+  const y = Math.max(0.05, drag.planeY + drag.lift);
+  drag.lift = y - drag.planeY;
+  const cam = camera.getWorldPosition(new THREE.Vector3());
+  let p = drag.ray.intersectPlane(new THREE.Plane(UP, -y), new THREE.Vector3());
+  // 視線跟地面快要平行（或往上看）時交點會跑到很遠：限制在 25 公尺內
+  if (!p || p.distanceTo(cam) > 25) {
+    p = drag.ray.at(Math.min(drag.lastDist ?? 6, 25), new THREE.Vector3());
+    p.y = y;
+  }
+  drag.lastDist = p.distanceTo(cam);
+  phys.moveHold(p);
+}
+
+// 搖一搖：1.2 秒內來回甩 3 次以上
+function zigzags(samples, key, minSwing = 30) {
+  let count = 0;
+  let dir = 0;
+  let peak = samples[0]?.[key] ?? 0;
+  const start = peak;
+  for (const s of samples) {
+    const v = s[key];
+    if (dir === 0) {
+      if (Math.abs(v - start) >= minSwing) {
+        dir = Math.sign(v - start);
+        peak = v;
+      }
+    } else if ((v - peak) * dir > 0) {
+      peak = v;
+    } else if (Math.abs(v - peak) >= minSwing) {
+      count += 1;
+      dir = -dir;
+      peak = v;
+    }
+  }
+  return count;
+}
+function detectShake(e) {
+  const t = e.timeStamp || performance.now();
+  drag.trail.push({ t, x: e.clientX, y: e.clientY });
+  while (drag.trail.length && t - drag.trail[0].t > 1200) drag.trail.shift();
+  if (drag.shaken || !drag.inst.glue) return;
+  if (zigzags(drag.trail, 'x') + zigzags(drag.trail, 'y') >= 3) {
+    drag.shaken = true;
+    pushUndo();
+    detachInst(drag.inst);
+    toast(`🫨 把「${partName(drag.inst.partId)}」搖下來了`);
+  }
+}
+
+function showHoldHud(x) {
+  const hud = $('#holdHud');
+  hud.hidden = false;
+  hud.classList.toggle('left', x > window.innerWidth / 2); // 按鈕放在手指的另一邊，另一隻手按得到
+  const hint = $('#holdHint');
+  hint.classList.remove('fade');
+  clearTimeout(showHoldHud.timer);
+  showHoldHud.timer = setTimeout(() => hint.classList.add('fade'), 4000);
+}
+function hideHoldHud() {
+  $('#holdHud').hidden = true;
+  holdLiftDir = 0;
+}
+function refreshHoldHud() {
+  if ($('#holdHud').hidden) return;
+  $('#holdGlue').disabled = !phys.glueCandidate;
+}
+
+const newGlueId = () => `g_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+// 把這些東西（連同它們原本黏著的整組）黏成一組
+function glueTogether(list) {
+  const groups = new Set(list.map((i) => i.glue).filter(Boolean));
+  const id = [...groups][0] || newGlueId();
+  for (const inst of instances.values()) if (list.includes(inst) || (inst.glue && groups.has(inst.glue))) inst.glue = id;
+  scheduleSave();
+  return id;
+}
+function detachInst(inst) {
+  const group = glueMembers(inst);
+  if (group.length <= 2) group.forEach((i) => (i.glue = null));
+  else inst.glue = null;
+  selectOnly(inst.id);
+  scheduleSave();
+}
+function glueHeld() {
+  const h = phys.holding;
+  const c = phys.glueCandidate;
+  if (!h || !c) return toast('把它靠到另一個東西旁邊（出現黃色的線）再按 🔗');
+  pushUndo();
+  glueTogether([...h.members, ...c.members]);
+  selectOnly(h.inst.id);
+  toast('🔗 黏上了！現在是同一個東西');
+}
+function glueSelected() {
+  const sel = selectedInstances();
+  if (clustersOf(sel).length < 2) return toast('先選兩個以上的東西（手機先按「多選」）');
+  pushUndo();
+  glueTogether(sel);
+  selectOnly(sel[0].id);
+  toast(phys.ready ? `🔗 黏起來了（${sel.length} 個東西變成一體）` : `🔗 黏起來了（${sel.length} 個）；打開物理後會變成同一個剛體`);
+}
+function recallSelected() {
+  const sel = selectedInstances();
+  if (!sel.length) return toast('先選一個東西');
+  if (!phys.ready) return toast('時光倒轉要先打開物理（🌍 世界分頁）');
+  let ok = 0;
+  let stopped = 0;
+  for (const list of clustersOf(sel)) {
+    const r = phys.recall(list[0]);
+    if (r.ok && r.stopped) stopped += 1;
+    else if (r.ok) ok += 1;
+  }
+  if (ok) toast('⏪ 時光倒轉！它會沿著剛才的路線退回去');
+  else if (stopped) toast('⏸ 停止倒轉');
+  else toast('它最近沒有動過，沒有路線可以倒轉');
+}
+function powerSelected() {
+  const sel = selectedInstances();
+  if (!phys.ready) return toast('裝置要先打開物理（🌍 世界分頁）');
+  const results = [];
+  for (const list of clustersOf(sel)) if (phys.hasDevices(list[0])) results.push(phys.activate(list[0]));
+  if (!results.length) return toast('選取的東西上沒有裝置（風扇、輪子、火箭…）');
+  toast(results.some((r) => r?.power) ? '⚡ 裝置啟動' : results.some((r) => r?.fired) ? '⚡ 發射！' : '裝置關閉');
+}
+async function setPhysics(on, { persist = true, quiet = false, wake = true } = {}) {
+  physicsOn = on;
+  renderPhysBtn();
+  if (on) {
+    try {
+      await phys.setEnabled(true, { wake });
+    } catch (e) {
+      console.error(e);
+      physicsOn = false;
+      renderPhysBtn();
+      toast(`⚠️ 物理引擎載入失敗：${e.message}`);
+      return false;
+    }
+  } else {
+    if (drag?.physics) drag = null;
+    hideHoldHud();
+    await phys.setEnabled(false);
+  }
+  updateSelectionUI();
+  if (persist) scheduleSave();
+  if (!quiet) toast(on ? '🍎 物理開啟：東西會掉、會倒；拖曳＝究極手，放手可以丟出去' : '物理關閉：回到原本的擺放方式');
+  return true;
+}
+function renderPhysBtn() {
+  const b = $('#physBtn');
+  b.textContent = physicsOn ? '🍎 物理：開' : '🍎 物理：關';
+  b.classList.toggle('on', physicsOn);
+  document.body.classList.toggle('physics-on', physicsOn);
+}
+
 // ---------------- 調整動作 ----------------
 
 function keepBottom(inst, mutate) {
@@ -552,21 +808,60 @@ function keepBottom(inst, mutate) {
   mutate();
   inst.object.position.y += before - worldBox(inst).min.y;
 }
+// 選取分成「一組一組」：黏在一起的算一組，其餘各自一組
+function clustersOf(sel) {
+  const map = new Map();
+  for (const i of sel) {
+    const k = i.glue || i.id;
+    if (!map.has(k)) map.set(k, []);
+    map.get(k).push(i);
+  }
+  return [...map.values()];
+}
+function clusterBox(list) {
+  const b = new THREE.Box3();
+  for (const i of list) b.union(worldBox(i));
+  return b;
+}
+function keepClusterBottom(list, mutate) {
+  const before = clusterBox(list).min.y;
+  mutate();
+  const dy = before - clusterBox(list).min.y;
+  for (const i of list) i.object.position.y += dy;
+}
 function rotateSelected(dir) {
   const sel = selectedInstances();
   if (!sel.length) return;
   pushUndo();
-  for (const i of sel) keepBottom(i, () => i.object.rotateY((dir * Math.PI) / 12));
+  const q = new THREE.Quaternion().setFromAxisAngle(UP, (dir * Math.PI) / 12);
+  for (const list of clustersOf(sel)) {
+    if (list.length === 1) {
+      const i = list[0];
+      keepBottom(i, () => i.object.rotateY((dir * Math.PI) / 12));
+      continue;
+    }
+    const pivot = clusterBox(list).getCenter(new THREE.Vector3());
+    keepClusterBottom(list, () => {
+      for (const i of list) {
+        i.object.position.sub(pivot).applyQuaternion(q).add(pivot);
+        i.object.quaternion.premultiply(q);
+      }
+    });
+  }
   scheduleSave();
 }
 function scaleSelected(f) {
   const sel = selectedInstances();
   if (!sel.length) return;
   pushUndo();
-  for (const i of sel) {
-    keepBottom(i, () => {
-      const s = THREE.MathUtils.clamp(i.object.scale.x * f, 0.05, 50) / i.object.scale.x;
-      i.object.scale.multiplyScalar(s);
+  for (const list of clustersOf(sel)) {
+    const s = THREE.MathUtils.clamp(list[0].object.scale.x * f, 0.05, 50) / list[0].object.scale.x;
+    const pivot = clusterBox(list).getCenter(new THREE.Vector3());
+    keepClusterBottom(list, () => {
+      for (const i of list) {
+        if (list.length > 1) i.object.position.sub(pivot).multiplyScalar(s).add(pivot);
+        i.object.scale.multiplyScalar(s);
+      }
     });
   }
   scheduleSave();
@@ -590,7 +885,9 @@ function duplicateSelected(times = 1) {
   right.cross(UP).setY(0).normalize();
   const created = [];
   for (let k = 1; k <= Math.min(times, 20); k += 1) {
+    const glueMap = new Map();
     for (const i of sel) {
+      if (i.glue && !glueMap.has(i.glue)) glueMap.set(i.glue, newGlueId());
       created.push(
         addInstance(
           {
@@ -599,6 +896,7 @@ function duplicateSelected(times = 1) {
             position: i.object.position.clone().addScaledVector(right, step * k).toArray(),
             quaternion: i.object.quaternion.toArray(),
             scale: i.object.scale.toArray(),
+            glue: i.glue ? glueMap.get(i.glue) : null,
           },
           { save: false },
         ),
@@ -649,6 +947,15 @@ async function groupSelected(name) {
 }
 
 function ungroupSelected() {
+  const glued = selectedInstances().filter((i) => i.glue);
+  if (glued.length) {
+    pushUndo();
+    for (const i of glued) i.glue = null;
+    scheduleSave();
+    updateSelectionUI();
+    toast(`✂️ 拆開了：${glued.length} 個東西不再黏在一起`);
+    return;
+  }
   const sel = selectedInstances().filter((i) => partKind(i.partId) === 'composite');
   if (!sel.length) return toast('選取的不是組合零件');
   pushUndo();
@@ -782,6 +1089,26 @@ function handleLocalCommand(t) {
   }
   if (/^(離開|下車|脫下|停止操作|exit|stop)[。.!！]?$/i.test(t)) {
     stopControl();
+    return true;
+  }
+  if (/^((打開|開啟|開)物理|物理(開|打開|開啟)|physics on)[。.!！]?$/i.test(t)) {
+    setPhysics(true);
+    return true;
+  }
+  if (/^((關掉|關閉|關)物理|物理(關|關掉|關閉)|physics off)[。.!！]?$/i.test(t)) {
+    setPhysics(false);
+    return true;
+  }
+  if (/^(黏起來|黏在一起|黏合|黏上|glue( (it|them|these))?( together)?)[。.!！]?$/i.test(t)) {
+    glueSelected();
+    return true;
+  }
+  if (/^(時光)?(倒轉|回溯|倒帶)[。.!！]?$|^(rewind|recall)( it)?[.!]?$/i.test(t)) {
+    recallSelected();
+    return true;
+  }
+  if (/^(啟動|發動|開關裝置|activate|power( on| off)?)[。.!！]?$/i.test(t)) {
+    powerSelected();
     return true;
   }
   // English: "save as part called turret" / "undo" / "delete" / "ungroup" / "duplicate 3"
@@ -993,6 +1320,7 @@ function replaceInstancePart(inst, newPartId) {
     position: inst.object.position.toArray(),
     quaternion: inst.object.quaternion.toArray(),
     scale: inst.object.scale.toArray(),
+    glue: inst.glue,
   };
   removeInstance(inst.id, { save: false });
   const n = addInstance(rec, { save: false });
@@ -1231,9 +1559,14 @@ let controlTarget = null; // 等使用者在選單選模式的物件
 
 function openControl(mode) {
   if (renderer.xr.isPresenting) return toast('VR 裡還不能用操作模式');
-  const sel = engine.active ? [engine.session.inst] : selectedInstances();
-  if (sel.length !== 1) return toast('先選一個物件，再按「▶ 操作」');
-  const inst = sel[0];
+  const groups = engine.active ? [[engine.session.inst]] : clustersOf(selectedInstances());
+  if (groups.length !== 1) return toast('先選一個物件，再按「▶ 操作」');
+  const inst = groups[0][0];
+  // 黏了風扇、輪子、火箭的東西：用駕駛模式（物理推動，搖桿轉向）
+  if (phys.ready && (mode === 'pilot' || (!mode && phys.hasDevices(inst)))) return startControl(inst, 'pilot');
+  if (inst.glue && (mode === 'wear' || (!mode && guessMode(runtime.parts.get(inst.partId)) === 'wear'))) {
+    return toast('黏在一起的東西不能戴，先按「拆開」');
+  }
   const chosen = mode || guessMode(runtime.parts.get(inst.partId));
   if (chosen) return startControl(inst, chosen);
   controlTarget = inst;
@@ -1250,10 +1583,12 @@ function startControl(inst, mode, { remember = false } = {}) {
   engine.start(inst, mode, part);
   document.body.classList.add('controlling');
   $('#ctlHud').hidden = false;
-  $('#ctlLabel').textContent = `${MODES[mode]}：${partName(inst.partId)}`;
+  const n = glueMembers(inst).length;
+  $('#ctlLabel').textContent = `${MODES[mode]}：${partName(inst.partId)}${n > 1 ? ` 等 ${n} 件` : ''}`;
   $('#btnUp').hidden = mode !== 'fly';
   $('#btnDown').hidden = mode !== 'fly';
   $('#btnSpin').hidden = mode !== 'wear';
+  $('#ctlSwitch').hidden = mode === 'pilot';
   const hint = $('#ctlHint');
   hint.classList.remove('fade');
   clearTimeout(startControl.hintTimer);
@@ -1262,6 +1597,9 @@ function startControl(inst, mode, { remember = false } = {}) {
     drive: isTouch ? '左下搖桿：往上是油門、往下倒車、左右轉彎' : 'W／S 油門倒車、A／D 轉彎、空白鍵動作、Esc 離開',
     fly: isTouch ? '搖桿控制方向，▲▼ 升降' : 'WASD 方向、E 升 Q 降、空白鍵動作、Esc 離開',
     wear: isTouch ? '搖桿走路，拖曳畫面看四周，⚡ 是動作' : 'WASD 走路、拖曳看四周、空白鍵動作、Esc 離開',
+    pilot: isTouch
+      ? '搖桿往上＝裝置出力、左右轉向；⚡ 開關裝置（火箭、彈簧按一下就發動）'
+      : 'W／S 出力倒退、A／D 轉向；空白鍵開關裝置（火箭、彈簧按一下就發動）；Esc 離開',
   }[mode];
   // 使用者自己選的模式記在零件上，下次按「操作」就直接用
   if (remember && part && part.controls !== mode) {
@@ -1393,6 +1731,19 @@ window.addEventListener('keydown', (e) => {
   }
   const mod = e.metaKey || e.ctrlKey;
   const k = e.key.toLowerCase();
+  if (drag?.physics && drag.started) {
+    const right = new THREE.Vector3().crossVectors(forwardFlat(), UP).normalize();
+    if (k === 'q') phys.rotateHold(UP, Math.PI / 4);
+    else if (k === 'e') phys.rotateHold(UP, -Math.PI / 4);
+    else if (k === 'r') phys.rotateHold(right, Math.PI / 2);
+    else if (k === 'g' || k === ' ') glueHeld();
+    else if (k === 'arrowup' || k === 'arrowdown') {
+      drag.lift += k === 'arrowup' ? 0.15 : -0.15;
+      updateHoldTarget();
+    } else return;
+    e.preventDefault();
+    return;
+  }
   if (mod && k === 'z') {
     e.preventDefault();
     undo();
@@ -1412,7 +1763,12 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'r') scaleSelected(1.1);
   else if (k === 'f') scaleSelected(1 / 1.1);
   else if (k === 'g') groupSelected();
-  else if (e.key === 'Escape') clearSelection();
+  else if (k === 't') recallSelected();
+  else if (k === 'l') glueSelected();
+  else if (k === ' ' && selection.size) {
+    e.preventDefault();
+    powerSelected();
+  } else if (e.key === 'Escape') clearSelection();
   else if (e.key === '/') {
     e.preventDefault();
     $('#prompt').focus();
@@ -1436,6 +1792,9 @@ const ACTIONS = {
   del: deleteSelected,
   undo,
   control: () => openControl(),
+  glue: glueSelected,
+  recall: recallSelected,
+  power: powerSelected,
   multi: () => {
     multiMode = !multiMode;
     document.querySelectorAll('[data-act=multi]').forEach((b) => b.classList.toggle('on', multiMode));
@@ -1464,6 +1823,34 @@ document.querySelectorAll('.panel.right [data-tab]').forEach((b) =>
     $('#tab-parts').hidden = b.dataset.tab !== 'parts';
     $('#tab-world').hidden = b.dataset.tab !== 'world';
   }),
+);
+holdButton($('#holdUp'), () => (holdLiftDir = 1), () => (holdLiftDir = 0));
+holdButton($('#holdDown'), () => (holdLiftDir = -1), () => (holdLiftDir = 0));
+// 另一隻手指還按著畫面時，瀏覽器不一定會送 click：究極手的按鈕一按下就生效
+function pressButton(el, fn) {
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    if (el.disabled) return;
+    el.classList.add('on');
+    fn();
+  });
+  for (const type of ['pointerup', 'pointercancel', 'pointerleave']) el.addEventListener(type, () => el.classList.remove('on'));
+}
+pressButton($('#holdRotL'), () => phys.rotateHold(UP, Math.PI / 4));
+pressButton($('#holdRotR'), () => phys.rotateHold(UP, -Math.PI / 4));
+pressButton($('#holdFlip'), () => phys.rotateHold(new THREE.Vector3().crossVectors(forwardFlat(), UP).normalize(), Math.PI / 2));
+pressButton($('#holdGlue'), () => glueHeld());
+$('#physBtn').onclick = () => setPhysics(!physicsOn);
+renderer.domElement.addEventListener(
+  'wheel',
+  (e) => {
+    if (!drag?.physics || !drag.started) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    drag.lift += -Math.sign(e.deltaY) * 0.12;
+    updateHoldTarget();
+  },
+  { passive: false, capture: true },
 );
 $('#helpBtn').onclick = () => ($('#help').hidden = false);
 $('#helpClose').onclick = () => ($('#help').hidden = true);
@@ -1503,6 +1890,14 @@ renderer.setAnimationLoop(() => {
   }
   engine.update(dt);
   worlds.update(dt, t);
+  if (holdLiftDir && drag?.physics && drag.started) {
+    drag.lift += holdLiftDir * 1.5 * dt;
+    updateHoldTarget();
+  }
+  if (phys.enabled) {
+    phys.update(dt);
+    refreshHoldHud();
+  }
   if (worlds.hasRules && t - lastWorldSave > 5) {
     lastWorldSave = t;
     scheduleSave();
@@ -1525,6 +1920,10 @@ async function init() {
     await Promise.all(library.filter((p) => p.kind === 'generated').map((p) => loadModule(p.id)));
     for (const rec of state.scene.instances || []) if (runtime.parts.has(rec.partId)) addInstance(rec, { save: false });
     loaded = true;
+    physicsOn = urlPhysics !== null ? urlPhysics === '1' : state.scene.physics !== false;
+    renderPhysBtn();
+    // 重新打開頁面時東西先「睡著」：保留原本的擺法，碰到才開始受物理影響
+    if (physicsOn) setPhysics(true, { persist: false, quiet: true, wake: false });
     await worlds.init(state.worlds?.modules || [], state.worldState || {});
     renderLibrary();
     updateSelectionUI();
@@ -1570,6 +1969,19 @@ window.__ws = {
   openControl,
   startControl,
   stopControl,
+  physics: phys,
+  setPhysics,
+  saveNow,
+  get physicsOn() {
+    return physicsOn;
+  },
+  glueSelected,
+  recallSelected,
+  powerSelected,
+  glueMembers,
+  get holding() {
+    return phys.holding;
+  },
   screenOf(id, where = 'center') {
     const b = worldBox(instances.get(id));
     const p = b.getCenter(new THREE.Vector3());

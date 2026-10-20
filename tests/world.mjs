@@ -131,7 +131,8 @@ await page.waitForFunction(
   { timeout: 15000 },
 ).catch(() => {});
 const down = await ws((id) => window.__ws.worldBox(window.__ws.instances.get(id)).min.y, liftedId);
-check('啟用「重力微彈」→ 抬到半空的東西掉回地上', up > 2 && Math.abs(down) < 0.05, `底部 ${up.toFixed(2)} → ${down.toFixed(3)} m`);
+// 物理開著時規則把掉落交給物理引擎（只調彈性）：落地會彈一下、可能歪著停，外框底部在 ±12 公分內就是回到地上
+check('啟用「重力微彈」→ 抬到半空的東西掉回地上', up > 2 && Math.abs(down) < 0.12, `底部 ${up.toFixed(2)} → ${down.toFixed(3)} m`);
 
 // ---- 規則：極速甩尾（改開車引擎）----
 await card('極速甩尾').locator('.toggle').tap();

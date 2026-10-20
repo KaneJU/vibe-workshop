@@ -194,3 +194,23 @@ body.controlling .hud, body.controlling .panel, body.controlling #mobileBar { di
   max-width: 90vw; overflow: hidden; text-overflow: ellipsis; backdrop-filter: blur(10px);
 }
 body.controlling #worldHud { top: calc(70px + env(safe-area-inset-top)); }
+
+/* 物理（究極手、裝置、倒轉） */
+body:not(.physics-on) .phys-only { display: none !important; }
+#physBtn.on { background: rgba(157, 255, 92, 0.2); border-color: #9dff5c; color: #e7ffd6; }
+#holdHud { position: fixed; inset: 0; z-index: 7; pointer-events: none; }
+.hold-btns {
+  position: fixed; right: calc(14px + env(safe-area-inset-right)); bottom: calc(110px + env(safe-area-inset-bottom));
+  display: grid; grid-template-columns: auto auto; gap: 10px; pointer-events: auto;
+}
+#holdHud.left .hold-btns { right: auto; left: calc(14px + env(safe-area-inset-left)); }
+.hold-btns .ctl-round { width: 56px; height: 56px; font-size: 22px; border-color: rgba(157, 255, 92, 0.55); }
+.hold-btns .ctl-round.big { grid-column: 1 / span 2; justify-self: center; width: 76px; height: 76px; font-size: 30px; background: rgba(255, 243, 107, 0.16); border-color: #fff36b; }
+.hold-btns .ctl-round.big:not(:disabled) { animation: gluePulse 0.9s infinite; }
+@keyframes gluePulse { 50% { box-shadow: 0 0 0 10px rgba(255, 243, 107, 0.18); } }
+.hold-hint {
+  position: fixed; top: calc(108px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); width: min(92vw, 560px);
+  text-align: center; font-size: 13px; color: #e7ffd6; background: rgba(20, 40, 12, 0.72); border: 1px solid rgba(157, 255, 92, 0.4);
+  border-radius: 12px; padding: 6px 10px; transition: opacity 0.8s;
+}
+.hold-hint.fade { opacity: 0; }
