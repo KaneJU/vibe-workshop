@@ -263,7 +263,8 @@ async function runChecks(dir) {
     const rootPos = built.object.position.clone();
     const wheels = [];
     built.object.traverse((o) => {
-      if (o !== built.object && /^wheel|輪/i.test(o.name || '')) wheels.push({ o, q: o.quaternion.clone() });
+      // 名字像輪子的（渦輪、齒輪不算）
+      if (o !== built.object && /^wheel|輪/i.test(o.name || '') && !/渦輪|齒輪|輪廓/.test(o.name)) wheels.push({ o, q: o.quaternion.clone() });
     });
     for (let f = 0; f < 60; f += 1) {
       const st = {
@@ -487,7 +488,7 @@ async function checkPhysics({ THREE, root, meta, library, physMod, built, errors
     } else if (['fan', 'rocket', 'spring'].includes(myDevice.kind)) {
       warnings.push(`${DEVICE_KINDS[myDevice.kind].label}沒有 userData.onDevice：開關時看不出來（例如風扇葉片轉、火箭噴火）`);
     }
-    await probeDevice({ THREE, R, physMod, rt, candId, meta, myDevice, warnings, report });
+    await probeDevice({ THREE, R, physMod, rt, candId, meta, myDevice, errors, warnings, report });
   } else if (built.object.userData?.onDevice) {
     warnings.push('有 onDevice 但 meta.json 沒寫 device，鉤子不會被呼叫');
   }
@@ -496,20 +497,21 @@ async function checkPhysics({ THREE, root, meta, library, physMod, built, errors
 // ---------------- 裝置實測 ----------------
 // 用工坊真正的物理引擎（public/physics.mjs）把裝置開一開：風扇／火箭有沒有往宣告的方向推、氣球會不會浮、
 // 彈簧會不會彈、四個輪子裝上木板開不開得動、操縱桿裝上車會不會翻。只出提醒，不擋交件。
-async function probeDevice({ THREE, R, physMod, rt, candId, meta, myDevice, warnings, report }) {
-  const { createPhysics, DEVICE_KINDS } = physMod;
+async function probeDevice({ THREE, R, physMod, rt, candId, meta, myDevice, errors, warnings, report }) {
+  const { createPhysics, collectPieces, DEVICE_KINDS } = physMod;
   const label = DEVICE_KINDS[myDevice.kind].label;
   const parts = new Map([
     [candId, { id: candId, name: meta?.name || 'candidate', device: meta?.device, physics: meta?.physics }],
     ['__plank__', { id: '__plank__', name: 'probe plank' }],
+    ['__raft__', { id: '__raft__', name: 'probe raft', physics: { mass: 4, friction: 0.6 } }],
     ['__wheel__', { id: '__wheel__', name: 'probe wheel', device: { kind: 'wheel' }, physics: { mass: 6, friction: 1.2 } }],
   ]);
   const instances = new Map();
   const mat = new THREE.MeshStandardMaterial();
   // 物理引擎靠 userData.partId 認出零件（和它的裝置），測試用的木板、輪子也要掛上
-  const box = (w, h, d) => {
+  const box = (w, h, d, partId = '__plank__') => {
     const g = new THREE.Group();
-    g.userData.partId = '__plank__';
+    g.userData.partId = partId;
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     m.position.y = h / 2;
     g.add(m);
@@ -563,18 +565,53 @@ async function probeDevice({ THREE, R, physMod, rt, candId, meta, myDevice, warn
   await phys.setEnabled(true, { wake: true });
   const kind = myDevice.kind;
   if (kind === 'fan' || kind === 'rocket') {
-    const inst = add(candId, candidate(), [0, 0, 0]);
-    run(0.5);
-    const p0 = inst.object.position.clone();
-    phys.activate(inst);
-    run(2);
-    const d = inst.object.position.clone().sub(p0);
     const dir = new THREE.Vector3(...(myDevice.direction || DEVICE_KINDS[kind].dir)).normalize();
-    report.probe = { kind, moved: r2(d.length()), along: r2(d.dot(dir)) };
-    if (d.length() < 0.3) warnings.push(`${label}啟動 2 秒只動了 ${r2(d.length())} m：force 太小，或碰撞形狀卡在地上`);
-    else if (d.dot(dir) < 0.5 * d.length()) {
-      const u = d.clone().normalize();
-      warnings.push(`${label}推的方向不對：宣告往 [${dir.toArray().map(r2)}]，實際往 [${u.toArray().map(r2)}]（風扇葉片、噴口要朝 −Z，或改 device.direction）`);
+    // 出力點＝裝置碰撞外形的中心；它偏離零件中軸（垂直於推力方向）多遠，就會把東西扭多大力
+    const piece = collectPieces(THREE, candidate(), { deviceOf: (id) => (id === candId ? myDevice : null) }).find((p) => p.device);
+    const off = piece ? new THREE.Vector3(piece.center.x, 0, piece.center.z) : new THREE.Vector3();
+    off.sub(dir.clone().multiplyScalar(off.dot(dir)));
+    const offCm = Math.round(off.length() * 100);
+    if (Math.abs(dir.y) < 0.7) {
+      // 往水平推：單獨放在地上點火 2 秒，看有沒有往 direction 走
+      const inst = add(candId, candidate(), [0, 0, 0]);
+      run(0.5);
+      const p0 = inst.object.position.clone();
+      phys.activate(inst);
+      run(2);
+      const d = inst.object.position.clone().sub(p0);
+      report.probe = { kind, moved: r2(d.length()), along: r2(d.dot(dir)), offCenterCm: offCm };
+      if (d.length() < 0.3) warnings.push(`${label}啟動 2 秒只動了 ${r2(d.length())} m：force 太小，或碰撞形狀卡在地上`);
+      else if (d.dot(dir) < 0.5 * d.length()) {
+        const u = d.clone().normalize();
+        warnings.push(`${label}推的方向不對：宣告往 [${dir.toArray().map(r2)}]，實際往 [${u.toArray().map(r2)}]（風扇葉片、噴口要朝 −Z，或改 device.direction）`);
+      }
+    } else {
+      // 往上推（噴射背包、升空器）：單獨點火本來就會翻滾，看不出好壞。照使用者的用法，
+      // 黏在一塊輕木筏正中間點火，看前 0.8 秒有沒有往上走、木筏會不會翻
+      const raft = add('__raft__', box(1.6, 0.1, 1.0, '__raft__'), [0, 0, 0], 'g_probe');
+      const inst = add(candId, candidate(), [0, 0.1, 0], 'g_probe');
+      run(0.5);
+      const p0 = raft.object.position.clone();
+      phys.activate(inst);
+      let tilt = 0;
+      const up = new THREE.Vector3();
+      const Y = new THREE.Vector3(0, 1, 0);
+      run(0.8, () => {
+        up.set(0, 1, 0).applyQuaternion(raft.object.quaternion);
+        tilt = Math.max(tilt, up.angleTo(Y));
+      });
+      const d = raft.object.position.clone().sub(p0);
+      const tiltDeg = Math.round(THREE.MathUtils.radToDeg(tilt));
+      report.probe = { kind, glued: true, moved: r2(d.length()), along: r2(d.dot(dir)), tilt: tiltDeg, offCenterCm: offCm };
+      if (tiltDeg > 35) {
+        // 翻過去（> 90°）＝黏在任何東西上都會把它掀翻，裝置等於壞了：一定要修
+        (tiltDeg > 90 ? errors : warnings).push(
+          `${label}黏在木筏正中間點火，0.8 秒內木筏就${tiltDeg > 90 ? '翻過去了' : '歪了'}（${tiltDeg}°）：推力沒有通過中心${offCm >= 1 ? `（出力點偏離零件中軸 ${offCm} cm）` : ''}。` +
+            '出力點是碰撞外形的中心：把噴口／機身做在零件正中間、前後左右對稱，不對稱的裝飾做成不碰撞（userData.noCollide = true）',
+        );
+      } else if (d.dot(dir) < 0.3) {
+        warnings.push(`${label}黏在木筏上點火 0.8 秒只往 [${dir.toArray().map(r2)}] 走了 ${r2(d.dot(dir))} m：force 太小，舉不起東西`);
+      }
     }
   } else if (kind === 'balloon') {
     const inst = add(candId, candidate(), [0, 0, 0]);

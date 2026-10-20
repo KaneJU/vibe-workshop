@@ -36,7 +36,7 @@ Every request becomes a small job folder with six ingredients:
 | 2 | [`fabricator/AGENTS.md`](fabricator/AGENTS.md) | The spec: meters, origin at the bottom center, front faces +Z, the `ctx` API, animation hooks, physics and devices, budgets, forbidden APIs, placement rules. |
 | 3 | [`fabricator/examples/`](fabricator/examples) | Seven working modules (a car, a glove, a fan device, a ring built from an existing part, an environment, two rules). Codex opens the closest one first. A test keeps them passing. |
 | 4 | `context.json` | The user's words, the selection and nearby objects — with what each one *is* (description, drivable, device, animated, glued) — the player's position, and every toolbox part with its size. |
-| 5 | [`fabricator/validate.mjs`](fabricator/validate.mjs) | Really builds the part in Node and runs 90 animation frames; checks size, grounding, budgets and forbidden APIs; fails on made-up `ctx` / `world` members; warns about leftover TODOs and empty hooks; drops the part on a floor; and test-drives devices in the real physics engine (does the fan push, the balloon rise, a cart on four of these wheels drive?). 10-second watchdog. |
+| 5 | [`fabricator/validate.mjs`](fabricator/validate.mjs) | Really builds the part in Node and runs 90 animation frames; checks size, grounding, budgets and forbidden APIs; fails on made-up `ctx` / `world` members; warns about leftover TODOs and empty hooks; drops the part on a floor; and test-drives devices in the real physics engine (does the fan push, the balloon rise, a jetpack glued to a raft lift it without flipping, a cart on four of these wheels drive?). 10-second watchdog. |
 | 6 | [`fabricator/snapshot.mjs`](fabricator/snapshot.mjs) | "Look at your work": the server renders four views (front, side, top, 3/4) into `snapshot.png` and Codex opens it with its image viewer to check the result against the request. Codex's sandbox can't run a browser, so the job folder and the server pass notes. |
 
 Codex loops until PASS; the server validates again, and if that fails it gives the errors to a fresh Codex for one more try. If OpenAI is busy (429, model at capacity), the job waits and starts again by itself — that doesn't count as a try — and new jobs hold back for a moment; if your Codex quota has run out, it says so instead of retrying.
@@ -217,7 +217,7 @@ npm run test:world       # iPhone: moon, gravity, drift, error isolation, rollba
 npm run test:physics     # iPhone: fall and stack, Ultrahand, glue, shake off, fan, balloon, cart with a steering stick, Recall, gravity rule, reload
 npm run test:xr          # VR on an emulated Quest 3 (IWER): controller grab, follow, wrist turn, release, hand pinch — physics on and off
 npm run test:examples    # every example in fabricator/examples passes the real validator (no server needed)
-WITH_CODEX=1 npm run bench   # the fixed prompt set: success, time, validator rounds, a snapshot of every result (uses Codex quota)
+WITH_CODEX=1 npm run bench   # fixed prompts (SET=hard: drive, fly, wear, devices, rules): success, time, validator rounds, a snapshot, and a try-out of every result with today's validator and ⚡ (uses Codex quota)
 WITH_CODEX=1 npm test    # also runs a real build and modification (uses Codex quota)
 ```
 

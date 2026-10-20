@@ -104,7 +104,7 @@ export function createControlEngine({ THREE, scene, camera, controls, world, wor
     root.traverse((o) => {
       if (o === root || wheels.length >= 12) return;
       const n = String(o.name || '');
-      if (!/wheel|tire|tyre|輪|胎/i.test(n) || /steer|方向盤|arch|拱|well|cover|蓋|眉|hub ?cap/i.test(n)) return;
+      if (!/wheel|tire|tyre|輪|胎/i.test(n) || /steer|方向盤|arch|拱|well|cover|蓋|眉|hub ?cap|渦輪|齒輪|輪廓/i.test(n)) return;
       for (let p = o.parent; p && p !== root; p = p.parent) if (wheels.some((w) => w.obj === p)) return;
       const box = new THREE.Box3().setFromObject(o);
       if (box.isEmpty()) return;

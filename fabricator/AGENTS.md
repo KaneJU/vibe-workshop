@@ -199,6 +199,10 @@ or drives the whole thing with the joystick. Declare it in meta.json: `"device":
 
 - `"direction": [x, y, z]` (optional, the part's own coordinates) changes which way a fan / rocket / spring pushes.
   Wheels also take `"speed"` (top speed in m/s).
+- The push acts at the center of the device's collision shape. Keep that center on the push axis — build the body
+  symmetric around it — or the device twists whatever it is glued to: a jetpack whose center is 4 cm off flips a raft
+  in under a second. Make lopsided decorations (straps, a side handle) non-colliding with `userData.noCollide = true`.
+  The validator glues upward-pushing devices to a light raft and warns if the raft tips over.
 - Feedback hook (recommended): `root.userData.onDevice = (s, dt) => {}` with `s = { kind, on, power (0–1), firing, t }`,
   called every frame — spin the fan blades only while `s.on`, show a flame while `s.firing`, squash the spring right
   after it fires (`s.t` is small). Keep it cheap; it must not throw. The physics engine spins wheels by itself.

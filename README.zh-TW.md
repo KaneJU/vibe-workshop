@@ -36,7 +36,7 @@ Codex 不是在生成網格或圖片，而是**寫 60～80 行的 JavaScript**�
 | 2 | [`fabricator/AGENTS.md`](fabricator/AGENTS.md) | 施工規格書：單位公尺、原點在底部中心、正面朝 +Z、`ctx` 介面、動畫寫法、物理與裝置、效能預算、禁止使用的功能、擺放規則。 |
 | 3 | [`fabricator/examples/`](fabricator/examples) | 七個做對了的範例（車、手套、風扇裝置、用現成零件排的圓環、一個環境、兩個規則）。Codex 會先打開最接近的那個；另有測試確保範例一直都能通過驗收。 |
 | 4 | `context.json` | 使用者說的話、選了什麼、附近有什麼——連同每個東西「是什麼」（說明、能不能開、是不是裝置、會不會動、有沒有黏著）——使用者站在哪，以及工具箱裡每個零件的名字和尺寸。 |
-| 5 | [`fabricator/validate.mjs`](fabricator/validate.mjs) | 真的在 Node 裡把零件組出來、跑 90 格動畫；檢查尺寸、貼地、預算和禁止的功能；讀到不存在的 `ctx`／`world` 成員（AI 亂編的）就判不及格；提醒還留著 TODO 或空殼的程式；把零件丟到地上看會不會倒；裝置還會放進真的物理引擎開一開（風扇推不推得動、氣球會不會浮、四個這種輪子裝上木板開不開得動）。卡住超過 10 秒就判失敗。 |
+| 5 | [`fabricator/validate.mjs`](fabricator/validate.mjs) | 真的在 Node 裡把零件組出來、跑 90 格動畫；檢查尺寸、貼地、預算和禁止的功能；讀到不存在的 `ctx`／`world` 成員（AI 亂編的）就判不及格；提醒還留著 TODO 或空殼的程式；把零件丟到地上看會不會倒；裝置還會放進真的物理引擎開一開（風扇推不推得動、氣球會不會浮、噴射裝置黏在木筏上會不會把它掀翻、四個這種輪子裝上木板開不開得動）。卡住超過 10 秒就判失敗。 |
 | 6 | [`fabricator/snapshot.mjs`](fabricator/snapshot.mjs) | 「看看自己做的東西」：伺服器把正面、側面、上方、斜角拍成 `snapshot.png`，Codex 用看圖工具打開，對照使用者要的東西檢查。Codex 的沙盒裡開不了瀏覽器，所以工作資料夾和伺服器用「傳紙條」交接。 |
 
 Codex 自己跑驗收直到 PASS；伺服器收件前會再驗一次，沒過就把錯誤交給一個新的 Codex 再修一次。如果是 OpenAI 那邊太忙（429、模型滿載），會等一下自動重跑（不算一次），排隊中的工作也先緩一緩；如果是 Codex 額度用完，就直接說額度用完，不白白重試。
@@ -215,7 +215,7 @@ npm run test:world       # iPhone：月球、重力、甩尾、出錯隔離、�
 npm run test:physics     # iPhone：掉落與疊放、究極手、黏合、搖一搖拆下、風扇、氣球、操縱桿小車、時光倒轉、改重力的規則、重新整理
 npm run test:xr          # 模擬 Quest 3（IWER）進 VR：手把抓、跟著走、轉手腕、放開、手勢捏——物理開關各一輪
 npm run test:examples    # fabricator/examples 裡每個範例都要通過真的驗收（不用開伺服器）
-WITH_CODEX=1 npm run bench   # 固定題目：成功與否、時間、驗收輪數，每個成品拍一張照（會用 Codex 額度）
+WITH_CODEX=1 npm run bench   # 固定題目（SET=hard 換成會開、會飛、能戴、裝置、規則的難題）：成功與否、時間、驗收輪數、每個成品拍照，再用現在的驗收和 ⚡ 試用一次（會用 Codex 額度）
 WITH_CODEX=1 npm test    # 再加跑一次真的打造和改造（會用 Codex 額度）
 ```
 
