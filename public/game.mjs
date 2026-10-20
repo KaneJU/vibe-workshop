@@ -647,7 +647,7 @@ export function createGame(env) {
                 `<div class="g-item game" data-id="${g.id}"><b>${esc(g.name)}</b><small>${esc(RULE_TEXT(g))}${g.last ? ` · 上次：${esc(g.last.results?.[0]?.name || '')} ${g.last.results?.[0]?.score ?? ''} 分` : ''}${g.plays ? ` · 玩過 ${g.plays} 回合` : ''}</small><div class="g-item-btns"><button type="button" class="primary" data-act="host">👥 開房間</button><button type="button" data-act="edit">✏️ 編輯</button><button type="button" data-act="copy">📋 複製</button></div></div>`,
             )
             .join('')
-        : '<p class="g-small">還沒有遊戲。按下面的按鈕，用內建的能量槍和標靶做一個（不用寫程式、不用 AI）。</p>');
+        : '<p class="g-small">還沒有遊戲。按上面的「＋ 做一個射靶遊戲」，用內建的能量槍和標靶做一個（不用寫程式、不用 AI）。</p>');
     box.querySelectorAll('.join').forEach((b) => (b.onclick = () => env.goTo(`/?room=${b.dataset.code}`)));
     box.querySelectorAll('.game').forEach((el) => {
       const id = el.dataset.id;
