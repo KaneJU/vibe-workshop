@@ -121,10 +121,14 @@ try {
   await sleep(1000);
   s = await page.evaluate(() => window.__ws.creation.state());
   check('存檔後重新整理：作品與版本還在', s.live[0].version === L2.version && s.live[0].lineage === L.lineage, s.live[0].hud.join(' | '));
-  // connector 關掉：照樣能玩
+  // connector 關掉：照樣能玩（看沙盒裡實例的存檔有沒有因為輸入而改變，不只看 HUD 文字）
   connector.kill('SIGINT');
   await sleep(1500);
-  const hudD = s.live[0].hud.join(' | ');
+  const snap = () => page.evaluate(async () => {
+    const c = window.__ws.creation;
+    return JSON.stringify((await c.host().snapshot(c.state().live[0].hostId)).state);
+  });
+  const stD = await snap();
   for (let i = 0; i < 4; i += 1) {
     await page.keyboard.down('ArrowLeft');
     await sleep(500);
@@ -132,8 +136,9 @@ try {
   }
   await page.keyboard.press('Space');
   await sleep(1500);
+  const stE = await snap();
   const hudE = (await page.evaluate(() => window.__ws.creation.state())).live[0].hud.join(' | ');
-  check('connector／Codex 關掉後，做好的作品照樣能玩', hudD !== hudE || !(await page.evaluate(() => window.__ws.creation.state())).live[0].broken, `${hudD} → ${hudE}`);
+  check('connector／Codex 關掉後，做好的作品照樣能玩（按鍵後實例狀態有變化）', stD !== stE && !(await page.evaluate(() => window.__ws.creation.state())).live[0].broken, hudE);
   check('頁面沒有錯誤', errors.length === 0, errors.slice(0, 3).join(' | '));
 } catch (e) {
   check('流程沒有例外', false, e.stack || e.message);
