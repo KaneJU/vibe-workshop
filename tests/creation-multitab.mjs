@@ -5,6 +5,8 @@
 // - 只看的分頁點作品＝接手：原執行者先存檔交出，分數不掉
 // - 執行者斷線：lease 到期後別人接手；斷線的分頁回來時改成只看並同步成最新存檔（不覆蓋）
 // - 執行中有人加作品／開傳送門：執行者併進來，自己正在跑的狀態不變
+// - 手機方向鈕（觸控 pointerdown）和鍵盤一樣：只看的分頁按下去＝接手，按住就真的照著動，放開／pointercancel 就停；
+//   眼鏡模式捏作品和點作品一樣（只看的分頁這一下拿來接手、不送給作品）
 //   node tests/creation-multitab.mjs        輸出 tests/out/creation-multitab/
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -57,6 +59,17 @@ const ORB2 = ORB.replace("init() { return { hits: 0, t: 0 }; }", 'init() { retur
   .replace("hud(s) { return ['命中 ' + s.hits]; }", "hud(s) { return ['命中 ' + s.hits, 'v2']; }")
   .replace("color: '#33ccff'", "color: '#ff9933'")
   .replace("onEvent(s, ev) {", "migrate(old) { return { ...old, combo: 0 }; },\n  onEvent(s, ev) {");
+// 照方向鍵移動的方塊（測觸控方向鈕接手後是不是真的能控制）
+const MOVER = `vibe.define({
+  init() { return { x: 0, taps: 0 }; },
+  tick(s, dt, input) { if (input.keys.right) s.x += dt; if (input.keys.left) s.x -= dt; },
+  view(s) { return [
+    { id: 'base', shape: 'box', pos: [0, 0.05, 0], size: [3, 0.1, 1], color: '#203040' },
+    { id: 'puck', shape: 'sphere', pos: [Math.max(-1.4, Math.min(1.4, s.x)), 0.4, 0], size: [0.3], color: '#ffd166' },
+  ]; },
+  hud(s) { return ['x ' + s.x.toFixed(3), '點 ' + s.taps]; },
+  onEvent(s, ev) { if (ev.type === 'click') s.taps += 1; },
+});`;
 let token = null;
 let connectorOn = true;
 async function connectorLoop() {
@@ -68,11 +81,11 @@ async function connectorLoop() {
     const r = await fetch(`${BASE}/api/connector/jobs?wait=2`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null);
     if (!r || r.status !== 200) continue;
     const { job } = await r.json();
-    const [code, schema] = /連擊/.test(job.intent) ? [ORB2, 2] : [ORB, 1];
+    const [code, schema, name] = /移動/.test(job.intent) ? [MOVER, 1, '方塊'] : /連擊/.test(job.intent) ? [ORB2, 2, '點球'] : [ORB, 1, '點球'];
     await fetch(`${BASE}/api/connector/jobs/${job.id}/package`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ manifest: { format: 'vibe-pkg/1', name: '點球', description: 'fixture', stateSchema: schema, budgets: { entities: 20 } }, files: { 'main.js': code }, provenance: { tool: 'fixture', via: 'fixture' } }),
+      body: JSON.stringify({ manifest: { format: 'vibe-pkg/1', name, description: 'fixture', stateSchema: schema, budgets: { entities: 20 } }, files: { 'main.js': code }, provenance: { tool: 'fixture', via: 'fixture' } }),
     });
   }
 }
@@ -224,6 +237,66 @@ try {
   check('伺服器重開：三個分頁自動重連；B 重新拿回執行權繼續跑、A1／A2 仍只看並同步（命中沒掉）', rb.role === 'leader' && ra1.role === 'follower' && ra2.role === 'follower' && (await hits(B)) >= hitsBeforeRestart && (await hits(A1)) >= hitsBeforeRestart, `reconnects B ${rb.stats.reconnects} A1 ${ra1.stats.reconnects} A2 ${ra2.stats.reconnects}；命中 B ${await hits(B)} A1 ${await hits(A1)}`);
   await B.screenshot({ path: path.join(OUT, 'b-leader.png') });
   await A1.screenshot({ path: path.join(OUT, 'a1-follower.png') });
+
+  // 手機方向鈕（觸控）：在乾淨的子世界，A1 執行、A2 只看（同一位創作者），放一個照方向鍵移動的方塊
+  const tw = await A1.evaluate(() => window.__ws.creation.createChild());
+  await A1.evaluate((id) => window.__ws.creation.enter(id), tw);
+  await A2.evaluate((id) => window.__ws.creation.enter(id), tw);
+  await A1.evaluate(() => window.__ws.creation.submit('做一個會照方向鍵移動的方塊'));
+  await until(A1, () => window.__ws.creation.state().live[0]?.name === '方塊', null, 20000);
+  await until(A2, () => window.__ws.creation.state().live[0]?.name === '方塊', null, 10000);
+  const xOf = async (p) => Number((await S(p)).live[0]?.hud?.[0]?.match(/-?\d+\.\d+/)?.[0] ?? NaN);
+  const tapsOf = async (p) => Number((await S(p)).live[0]?.hud?.[1]?.match(/\d+/)?.[0] ?? NaN);
+  const frames = (p, n = 20) => p.evaluate((k) => new Promise((r) => { let i = 0; const f = () => (++i >= k ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); }), n); // 讓遊戲迴圈跑 n 格（不是等固定秒數）
+  const key = (p, k) => p.locator(`#cKeys [data-k="${k}"]`);
+  const [t1, t2] = [await S(A1), await S(A2)];
+  check('子世界：A1 執行、A2 只看，只看的提示寫著「按方向鍵」也會接手', t1.role === 'leader' && t2.role === 'follower' && (await A2.locator('#cCrumb').innerText()).includes('按方向鍵'), `${t1.role}/${t2.role}`);
+  // 只看的 A2 按住「▶」：接手（A1 先存檔交出），接手後按住的方向真的在動
+  await key(A2, 'right').dispatchEvent('pointerdown');
+  await until(A2, () => window.__ws.creation.state().role === 'leader', null, 8000);
+  await until(A1, () => window.__ws.creation.state().role === 'follower', null, 8000);
+  await until(A2, () => Number(window.__ws.creation.state().live[0]?.hud?.[0]?.match(/-?\d+\.\d+/)?.[0]) > 0.3, null, 8000);
+  const [h1, h2] = [await S(A1), await S(A2)];
+  check('只看的分頁按手機方向鈕（pointerdown）＝接手：A1 存檔交出、A2 接手，按住的「▶」真的讓方塊往右走', h2.stats.takeovers === t2.stats.takeovers + 1 && h1.stats.handovers === t1.stats.handovers + 1 && (await xOf(A2)) > 0.3, `A2 takeovers ${t2.stats.takeovers}→${h2.stats.takeovers}；A1 handovers ${t1.stats.handovers}→${h1.stats.handovers}；x ${await xOf(A2)}`);
+  await key(A2, 'right').dispatchEvent('pointerup');
+  await frames(A2, 5); // 放開前已經送出去的那一步先回來
+  const xUp = await xOf(A2);
+  await frames(A2);
+  check('放開（pointerup）就停：之後 20 格 x 不再變', (await xOf(A2)) === xUp, `${xUp} → ${await xOf(A2)}`);
+  await key(A2, 'left').dispatchEvent('pointerdown');
+  await until(A2, (x0) => Number(window.__ws.creation.state().live[0]?.hud?.[0]?.match(/-?\d+\.\d+/)?.[0]) < x0 - 0.2, xUp, 8000);
+  await key(A2, 'left').dispatchEvent('pointercancel');
+  await frames(A2, 5);
+  const xCancel = await xOf(A2);
+  await frames(A2);
+  check('執行中直接控制（不用再接手）；手指被系統取消（pointercancel）也會停', (await xOf(A2)) === xCancel && xCancel < xUp, `${xUp} → ${xCancel} → ${await xOf(A2)}`);
+  await until(A1, (x) => window.__ws.creation.state().live[0]?.hud?.[0] === 'x ' + x.toFixed(3), xCancel, 10000);
+  check('只看的 A1 跟著同步到 A2 的位置', (await xOf(A1)) === xCancel, `A1 x ${await xOf(A1)}`);
+  // 只看的 A1 很快點一下「▶」：這一下拿來接手（不會讓方塊動），從 A2 交出的存檔接著跑
+  const a1Take0 = (await S(A1)).stats.takeovers;
+  await key(A1, 'right').dispatchEvent('pointerdown');
+  await key(A1, 'right').dispatchEvent('pointerup');
+  await until(A1, () => window.__ws.creation.state().role === 'leader', null, 8000);
+  await frames(A1);
+  check('只看的分頁很快點一下方向鈕：只拿來接手（方塊沒動），從最新存檔接著（x 一樣）', (await S(A1)).stats.takeovers === a1Take0 + 1 && (await xOf(A1)) === xCancel, `x ${xCancel} → ${await xOf(A1)}`);
+  // 眼鏡模式捏作品：只看的分頁（A2）捏下去＝接手，這一下不送給作品；接手後再捏才算點到
+  await until(A2, () => window.__ws.creation.state().role === 'follower', null, 8000);
+  const tapsBefore = await tapsOf(A1);
+  const pinchArg = await A2.evaluate(() => {
+    const L = window.__ws.creation.state().live[0];
+    return { inst: { id: L.hostId, name: L.name, entityId: 'puck', itemId: L.id } };
+  });
+  await A2.evaluate((h) => window.__ws.creation.pinch(h), pinchArg);
+  await until(A2, () => window.__ws.creation.state().role === 'leader', null, 8000);
+  const tapsAfterTake = await tapsOf(A2);
+  const pinchArg2 = await A2.evaluate(() => {
+    const L = window.__ws.creation.state().live[0];
+    return { inst: { id: L.hostId, name: L.name, entityId: 'puck', itemId: L.id } };
+  });
+  await A2.evaluate((h) => window.__ws.creation.pinch(h), pinchArg2);
+  await until(A2, (n) => window.__ws.creation.state().live[0]?.hud?.[1] === '點 ' + (n + 1), tapsAfterTake, 5000);
+  check('眼鏡模式：只看的分頁捏作品＝接手（這一下不送給作品），接手後再捏才算點到', tapsAfterTake === tapsBefore && (await tapsOf(A2)) === tapsBefore + 1, `點 ${tapsBefore} → 接手後 ${tapsAfterTake} → 再捏 ${await tapsOf(A2)}`);
+  await A2.screenshot({ path: path.join(OUT, 'a2-touch-leader.png') });
   check('三個頁面都沒有錯誤', errors.length === 0, errors.slice(0, 4).join(' | '));
 } catch (e) {
   check('測試流程沒有例外', false, e.stack || e.message);

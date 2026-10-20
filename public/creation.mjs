@@ -158,8 +158,9 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   function renderCrumb() {
     const c = $('#cCrumb');
     const parts = (world?.path || []).map((p, i, a) => `<span class="crumb">${i === a.length - 1 ? '📍 ' : ''}${esc(p.name)}</span>`).join('<span>›</span>');
-    const roleTxt = role === 'leader' ? (followers > 1 ? `▶ 這個分頁在執行（另有 ${followers - 1} 個在看）` : '') : role === 'follower' ? '👀 只看：這一層正由另一個分頁執行——點畫面或放作品就接手' : '';
-    c.innerHTML = `${world?.parentId ? '<button id="cUp" class="primary">⬑ 回上一層</button>' : ''}${parts}<span class="crumb">第 ${world?.depth ?? 0} 層</span>${roleTxt ? `<span class="crumb" id="cRole">${esc(roleTxt)}</span>` : ''}${connState === 'reconnecting' ? '<span class="crumb">⚠️ 連線中斷，重新連線中…</span>' : ''}`;
+    const roleTxt = role === 'leader' ? (followers > 1 ? `▶ 這個分頁在執行（另有 ${followers - 1} 個在看）` : '') : role === 'follower' ? '👀 只看：這一層正由另一個分頁執行——點作品、按方向鍵或放作品就接手' : '';
+    // 進入／返回途中（作品還沒全部起來）：「回上一層」先停用並標「載入中」，不會按了沒反應
+    c.innerHTML = `${world?.parentId ? `<button id="cUp" class="primary"${busy ? ' disabled' : ''}>⬑ 回上一層</button>` : ''}${parts}<span class="crumb">第 ${world?.depth ?? 0} 層</span>${busy ? '<span class="crumb">⏳ 載入中…</span>' : ''}${roleTxt ? `<span class="crumb" id="cRole">${esc(roleTxt)}</span>` : ''}${connState === 'reconnecting' ? '<span class="crumb">⚠️ 連線中斷，重新連線中…</span>' : ''}`;
     c.querySelector('#cUp')?.addEventListener('click', () => goUp());
     c.querySelector('#cRole')?.addEventListener('click', () => role === 'follower' && ensureLeader());
   }
@@ -369,6 +370,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   async function enter(worldId, { save = true } = {}) {
     if (busy) return;
     busy = true;
+    renderCrumb();
     await swapChain; // 換版交易做完才離開這一層
     try {
       if (world && save) await saveWorld();
@@ -377,6 +379,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
       const w = (await api('GET', `/api/cworlds/${worldId}`)).world;
       unloadWorld();
       world = w;
+      renderCrumb(); // 新的一層先顯示（標著載入中）；state().loading 要等作品全部起來才變 false
       // 這一層沒人在跑就由這個分頁執行；有人在跑就先只看（要動手時再接手）
       try {
         const lr = await api('POST', `/api/cworlds/${worldId}/lease`, { client: clientId, action: 'claim' });
@@ -395,13 +398,13 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
       }
       buildPortals();
       openEvents(world.id);
-      renderCrumb();
       renderPortals();
       stats.enters += 1;
       win.history.replaceState(null, '', worldId === 'root' ? '/?create' : `/?create&w=${encodeURIComponent(worldId)}`);
       applyPending();
     } finally {
       busy = false;
+      renderCrumb();
     }
   }
   function goUp() {
@@ -924,13 +927,18 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     return hit;
   }
   const KEYMAP = { ArrowLeft: 'left', a: 'left', A: 'left', ArrowRight: 'right', d: 'right', D: 'right', ArrowUp: 'up', w: 'up', W: 'up', ArrowDown: 'down', s: 'down', S: 'down', ' ': 'action' };
+  // 按下方向（鍵盤或手機方向鈕都走這裡）：執行中就照著動；只看的分頁這一下是「接手」——
+  // 按住的話接手後就照著動，很快點一下只拿來接手（不補那一下，避免接手得快慢決定方塊會不會動）
+  function pressKey(k) {
+    if (role === 'follower') ensureLeader();
+    else tappedAt[k] = performance.now();
+    keys[k] = true;
+  }
   on(win, 'keydown', (e) => {
     if (e.target.closest?.('input, textarea')) return;
     const k = KEYMAP[e.key];
     if (k) {
-      if (role === 'follower') ensureLeader();
-      keys[k] = true;
-      tappedAt[k] = performance.now();
+      pressKey(k);
       e.preventDefault();
     }
   });
@@ -942,8 +950,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     const k = b.dataset.k;
     b.addEventListener('pointerdown', (e) => {
       e.preventDefault();
-      keys[k] = true;
-      tappedAt[k] = performance.now();
+      pressKey(k); // 和鍵盤一樣：只看的分頁按方向鈕＝接手
     });
     for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(ev, () => (keys[k] = false));
   });
@@ -1117,6 +1124,10 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
       enter(hover.inst.portal);
       return true;
     }
+    if (role === 'follower') {
+      ensureLeader(); // 和點作品一樣：只看的分頁捏這一下拿來接手（不送給作品，避免兩邊各算各的）
+      return true;
+    }
     if (hover.inst.itemId) select(hover.inst.itemId);
     host.event(hover.inst.id, { type: 'click', target: hover.inst.entityId, by: 'hand' });
     return true;
@@ -1165,6 +1176,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
       return {
         me,
         world: world && { id: world.id, name: world.name, depth: world.depth, revision: world.revision, portals: world.portals.length, items: world.items.length },
+        loading: busy, // 進入／返回途中：world 已經換了，但作品還沒全部起來（測試要等這個變 false 才算到了）
         live: [...live.values()].map((L) => ({ id: L.item.id, hostId: L.hostId, lineage: L.lineage, version: L.version, name: L.name, broken: L.broken, hud: huds.get(L.hostId) || [] })),
         jobs: [...jobs.values()].map((J) => ({ id: J.job.id, status: J.job.status, kind: J.kind, worldId: J.context.worldId, attempts: J.job.attempts, lineage: J.job.lineage, version: J.job.version })),
         watching: [...watching.keys()],

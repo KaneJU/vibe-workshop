@@ -174,6 +174,12 @@ try {
   await page.goto(`${BASE}/?create`);
   await page.waitForFunction(() => window.__ws?.creation?.state().world?.id === 'root');
   const S = () => page.evaluate(() => window.__ws.creation.state());
+  // 「到了」：world 換成那一層、而且這一層載入完成（作品都起來了）——等這個，不等固定秒數（world 會比作品先換）
+  const arrived = (want) =>
+    page.waitForFunction((w) => {
+      const s = window.__ws?.creation?.state();
+      return !!s?.world && (typeof w === 'number' ? s.world.depth === w : s.world.id === w) && !s.loading;
+    }, want);
   check('創作世界載入：根世界、沙盒就緒、還沒有 connector', (await S()).world.id === 'root' && (await page.locator('#cConn').innerText()).includes('還沒連接'));
 
   // 配對：按「連接我的 Codex」→ 畫面上的配對碼 → connector 配對
@@ -261,7 +267,7 @@ try {
   await page.waitForFunction(() => window.__ws.creation.state().world.portals === 1);
   const bId = await page.evaluate(() => document.querySelector('#cPortals [data-enter]').dataset.enter);
   await page.click(`#cPortals [data-enter="${bId}"]`);
-  await page.waitForFunction((id) => window.__ws.creation.state().world.id === id, bId);
+  await arrived(bId);
   s = await S();
   check('進入 B：上一層停掉（B 裡沒有實例、Worker 收掉）、麵包屑顯示 根世界/B', s.live.length === 0 && s.host.workers === 0 && (await page.locator('#cCrumb').innerText()).includes('B 世界'), JSON.stringify(s.host));
   await page.fill('#cInput', '做一個疊塔'); // 文字備援（打字）
@@ -290,15 +296,14 @@ try {
   await sleep(500);
   await page.screenshot({ path: path.join(OUT, '02-world-c.png') });
   await page.click('#cUp');
-  await page.waitForFunction((id) => window.__ws.creation.state().world.id === id, bId);
+  await arrived(bId);
   await page.click('#cUp');
-  await page.waitForFunction(() => window.__ws.creation.state().world.id === 'root');
+  await arrived('root');
   s = await S();
   check('C → B → A 返回：A 的作品從存檔恢復（修正後的 v4、分數還在）', s.live.length === 1 && s.live[0].version === 4 && Number(s.live[0].hud[0]?.match(/\d+/)?.[0] ?? -1) >= hitsBefore, s.live[0]?.hud.join(' '));
   // 重開 C
   await page.goto(`${BASE}/?create&w=${cId}`);
-  await page.waitForFunction((id) => window.__ws?.creation?.state().world?.id === id, cId);
-  await sleep(800);
+  await arrived(cId);
   s = await S();
   check('重新整理後直接重開 C：星星塔的狀態還在（3 層）', s.live[0]?.hud.join(' ').includes('星星 3'), s.live[0]?.hud.join(' '));
   // C 的作品帶回 A：放兩個，互不污染
@@ -337,10 +342,10 @@ try {
   check('深鏈 12 層（第 9 層還建立作品）：每一層執行中的實例／Worker 只有那一層的（不隨深度累積）', depthStats.every((x) => x.workers <= 1 && x.live <= 1) && depthStats[11].depth === 12, JSON.stringify(depthStats.map((x) => `${x.depth}:${x.live}/${x.workers}`)));
   for (let d = 12; d >= 1; d -= 1) {
     await page.click('#cUp');
-    await page.waitForFunction((n) => window.__ws.creation.state().world.depth === n, d - 1);
+    await arrived(d - 1);
   }
   s = await S();
-  check('從第 12 層一層一層返回根世界：作品都在', s.world.id === 'root' && s.live.length === 3);
+  check('從第 12 層一層一層返回根世界：作品都在', s.world.id === 'root' && s.live.length === 3, `live ${s.live.length}/${s.world.items} loading ${s.loading}`);
 
   // 5 connector 關掉：照樣能玩
   connectorOn = false;
