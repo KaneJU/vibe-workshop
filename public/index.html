@@ -151,13 +151,45 @@
     <div id="title" hidden>
       <div class="title-card">
         <div class="title-logo">VIBE <span>工坊</span></div>
-        <div class="title-sub">小紅的信號塔 · 三關小冒險</div>
-        <p class="title-story">🤖 工坊停電了！幫小機器人小紅點亮能量塔、組一台探險車，開到信號塔求救。</p>
-        <button id="titlePlay" class="title-btn primary">▶ 開始冒險</button>
+        <div class="title-sub">做出會動的東西、自己的遊戲，和朋友一起玩</div>
+        <button id="titleGames" class="title-btn primary">🎮 遊戲房<small>做一個射靶遊戲、找朋友一起玩</small></button>
+        <button id="titlePlay" class="title-btn">▶ 新手教學：小紅的信號塔<small>3 關學會拿、組、開（約 5 分鐘）</small></button>
         <div id="titleSave" class="title-save" hidden></div>
-        <button id="titleRestart" class="title-link" hidden>↺ 從第 1 關重新開始</button>
-        <button id="titleFree" class="title-btn">🧰 自由工坊<small>說一句話，AI 幫你打造任何東西</small></button>
-        <div class="title-note">不用帳號、不用 VR 頭盔，手機或電腦都能玩，大約 5 分鐘。<br />冒險進度和自由工坊的作品分開保存，互不影響。</div>
+        <button id="titleRestart" class="title-link" hidden>↺ 教學從第 1 關重新開始</button>
+        <button id="titleFree" class="title-btn">🧰 自由工坊<small>說一句話或拍張照，AI 幫你打造任何東西</small></button>
+        <div class="title-note">不用帳號、不用 VR 頭盔，手機或電腦都能玩。<br />遊戲、教學進度和自由工坊的作品分開保存，互不影響。</div>
+      </div>
+    </div>
+
+    <!-- 遊戲房：大廳／玩法編輯器／房間 -->
+    <div id="gameHub" class="g-panel" hidden>
+      <div class="g-head"><button id="gameHubBack" class="adv-ico" title="回首頁">🏠</button><h2>🎮 遊戲房</h2></div>
+      <p class="g-small">用道具和標靶做一個遊戲，再找同一個 Wi-Fi 的朋友一起玩。</p>
+      <button id="gameNew" class="title-btn primary">＋ 做一個射靶遊戲</button>
+      <div id="gameHubBody"></div>
+    </div>
+    <div id="gameEditor" class="g-panel g-sheet" hidden>
+      <div class="g-head"><button id="gameEditorBack" class="adv-ico" title="回遊戲房">←</button><h2>✏️ 做遊戲</h2></div>
+      <div id="gameEditorBody"></div>
+      <div class="g-btns">
+        <button id="gameTry" class="primary big">▶ 開房間開始玩</button>
+        <button id="gameSave" class="big">💾 儲存</button>
+      </div>
+    </div>
+    <div id="gameHud" hidden>
+      <div class="g-top"><div id="gameScores" class="g-scores"></div><div id="gameTimer" class="g-timer"></div></div>
+      <div id="gameGoal" class="g-goal"></div>
+      <div id="gameCount" class="g-count" hidden></div>
+      <button id="gameReset" class="adv-rescue g-reset" title="回到起點、面向標靶" hidden>↺ 回原位</button>
+    </div>
+    <div id="crosshair"></div>
+    <div id="gameNet" class="g-net" hidden>連線中斷，正在重新連線…</div>
+    <div id="gameCard" class="modal g-card-wrap" hidden>
+      <div class="card adv-card">
+        <div id="gameCardIcon" class="adv-card-icon"></div>
+        <h2 id="gameCardTitle"></h2>
+        <div id="gameCardBody"></div>
+        <div id="gameCardBtns" class="adv-card-btns"></div>
       </div>
     </div>
 

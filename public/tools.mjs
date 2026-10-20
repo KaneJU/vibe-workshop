@@ -55,6 +55,7 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
   const _a = new THREE.Vector3();
   const _b = new THREE.Vector3();
   let cool = 0;
+  let fired = 0; // 總共射了幾發（測試和統計用）
   let override = null; // 遊戲設定改過的道具參數（顏色、射速）
   let enabled = true;
 
@@ -125,6 +126,7 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
       shots.push({ mesh, pos: start.clone(), dir: d, speed: tool.speed, left: tool.range, remote, tool });
     }
     if (!remote) {
+      fired += 1;
       held.inst.object.traverse((o) => typeof o.userData?.onFire === 'function' && safe(() => o.userData.onFire()));
       onFire?.({ from: start.toArray(), to: start.clone().addScaledVector(base, Math.min(start.distanceTo(aim) + 1, tool.range)).toArray(), color: tool.color });
     }
@@ -254,6 +256,9 @@ export function createTools({ THREE, scene, camera, engine, partOf, hittables, o
     },
     get count() {
       return shots.length;
+    },
+    get fired() {
+      return fired;
     },
   };
 }

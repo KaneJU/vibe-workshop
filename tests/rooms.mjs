@@ -138,7 +138,7 @@ check('小華斷線 → 小明那邊看到「斷線」，分數還在', A.state.
 const B2 = await player(room.code, '小華', B.token);
 await until(() => A.state.players.find((p) => p.id === B.id)?.connected === true, 5000);
 check('小華用同一個身分連回來 → 同一個玩家、分數保留', B2.rejoined && B2.id === B.id && A.state.players.find((p) => p.id === B.id).score === 2 && A.state.log.some((l) => l.text.includes('回來了')));
-await until(() => A.state.phase === 'ended', 20000);
+await until(() => A.state.phase === 'ended' && B2.state.phase === 'ended', 20000);
 check('時間到 → 結束；分數高的小華贏', A.state.reason === 'time' && A.state.winner === B.id && JSON.stringify(A.state.results) === JSON.stringify(B2.state.results), JSON.stringify(A.state.results));
 const lv = await B2.act({ type: 'leave' });
 await until(() => A.state.players.length === 1);

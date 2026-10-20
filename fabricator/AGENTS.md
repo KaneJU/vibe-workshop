@@ -211,6 +211,25 @@ or drives the whole thing with the joystick. Declare it in meta.json: `"device":
 - A bigger machine ("a fan boat", "a car with four wheels") can spawn devices from the library
   (`ctx.spawn('風扇')`): every spawned device keeps working inside the bigger part.
 
+## Tools and targets (behaviour props for games)
+
+Some things are not just decoration — they *do* something in a game. Declare it in meta.json and the workshop gives
+the part real behaviour (start from `examples/blaster-tool` or `examples/target-prop`):
+
+- `"tool": { "kind": "blaster" }` — a hand-held shooter (always add `"controls": "wear"`). While the user holds it,
+  ⚡ (Space on a computer) fires glowing shots from the muzzle toward the crosshair; holding ⚡ keeps firing.
+  Optional fields: `rate` (shots per second, 0.5–12, default 4), `speed` (m/s, 5–80, default 28), `range` (m, 5–120,
+  default 40), `color` (`"#rrggbb"`), `size` (shot radius in m, 0.02–0.3), `burst` (shots per press, 1–5) and
+  `spread` (radians, 0–0.2) for a shotgun.
+  - Build it ~0.3 m long with the barrel along +Z and the grip at the bottom (origin at the bottom of the grip).
+  - Put an empty `THREE.Object3D` at the barrel tip and set `root.userData.muzzle = thatObject`; shots start there.
+  - Mark glowing materials with `material.userData.toolGlow = true`: games recolour them to the player's colour.
+  - Optional hook `root.userData.onFire = () => {}` runs once per shot (recoil, muzzle flash). Keep it cheap.
+- `"target": { "points": 1 }` — something to hit. Shots that hit it score `points` in games; in the free workshop the
+  shot also pushes it. Optional hook `root.userData.onHit = () => {}` (wobble, flash).
+- A part that spawns or contains a tool (a "blaster turret on a cart") is a tool too when held.
+- These are fictional game props (energy / paintball style), not real weapons: keep them toy-like.
+
 ## Modes
 
 - `create` — build a new part from the request. The selection (if any) is context:

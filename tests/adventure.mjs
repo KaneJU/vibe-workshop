@@ -162,8 +162,8 @@ async function playthrough(kind) {
   await sleep(1200);
   await shot('01-title');
   const titleText = await page.textContent('#titlePlay');
-  check(`[${kind}] 首頁有大大的開始／繼續按鈕與自由工坊`, (await page.isVisible('#titlePlay')) && (await page.isVisible('#titleFree')), titleText.trim());
-  const titleBad = await targetSizes(['#titlePlay', '#titleFree', '#titleRestart']);
+  check(`[${kind}] 首頁有大大的開始／繼續按鈕（遊戲房、新手教學）與自由工坊`, (await page.isVisible('#titleGames')) && (await page.isVisible('#titlePlay')) && (await page.isVisible('#titleFree')), titleText.trim());
+  const titleBad = await targetSizes(['#titleGames', '#titlePlay', '#titleFree', '#titleRestart']);
   check(`[${kind}] 首頁按鈕夠大（≥44px）`, titleBad.length === 0, titleBad.join('；'));
 
   // ---- 開始：有舊進度就用首頁的「從第 1 關重新開始」（這顆按鈕也一起測） ----
@@ -439,9 +439,9 @@ async function playthrough(kind) {
   await shot('16-menu');
   await tapText('回首頁');
   await page.waitForSelector('#title:not([hidden])', { timeout: 15000 });
-  await waitFor(() => /繼續冒險|再玩一次/.test(document.querySelector('#titlePlay').textContent), null, 10000);
+  await waitFor(() => /繼續新手教學|再玩一次/.test(document.querySelector('#titlePlay').textContent), null, 10000);
   const again = await page.textContent('#titlePlay');
-  check(`[${kind}] 回首頁 → 按鈕變成「繼續冒險」`, again.includes('繼續冒險'), again.trim());
+  check(`[${kind}] 回首頁 → 按鈕變成「繼續新手教學」`, again.includes('繼續新手教學'), again.trim());
   const posts = requests.filter((r) => !r.startsWith('PUT /api/adventure'));
   check(`[${kind}] 整個冒險只寫冒險存檔（PUT /api/adventure），沒有其他寫入`, posts.length === 0, posts.slice(0, 5).join('、') || `PUT /api/adventure × ${requests.length}`);
   check(`[${kind}] 沒有 JS 錯誤`, errors.length === 0, errors.slice(0, 3).join(' | '));

@@ -11,6 +11,9 @@ No page reloads, no rebuilds — you never leave the world.
 
 ## Features
 
+- **Make a game and play it with friends** — in 🎮 Game rooms, pick a blaster (colour, fire rate), targets (how many, moving or not) and how to win (first to N points, or most points in 30/60/90 s) with buttons: no code, no AI needed. Open a room; friends on the same Wi-Fi tap it to join. The server keeps the score, countdown, timer and targets, so everyone sees the same game and the same results. The host changes the rules and plays again; games are saved.
+- **Props that do something** — like devices, a part can declare a behaviour in `meta.json`: a `tool` (a blaster that fires where you aim) or a `target`. The built-in 能量槍 (energy blaster) and 標靶 (target) work everywhere: hold the blaster in the free workshop and your shots knock things over. Codex can make new ones.
+- **A three-level tutorial** — 小紅的信號塔 (Little Red's signal tower) teaches grabbing, assembling and driving with built-in parts: carry a power cube to a charger, snap wheels and a steering stick onto a plank and test-drive it, then drive through two rings. Rescue buttons, resume after reload, results and replay.
 - **Speak or type to build** — the [OpenAI Codex CLI](https://github.com/openai/codex) writes a three.js "part" on the spot; it is validated and hot-loaded into the running world.
 - **Stack and compose** — drag objects onto each other, select several, and save them as a reusable part.
 - **Build from what you built** — a generated part can spawn other parts with `ctx.spawn(...)`, up to 8 levels deep.
@@ -74,7 +77,7 @@ npm install
 npm start
 ```
 
-Open <http://localhost:5310>. The first start loads a small demo scene (`examples/starter`). Type what you want in the box at the bottom and press Enter.
+Open <http://localhost:5310>. The home page offers 🎮 Game rooms, the tutorial and the free workshop (`/?ws`). The first start loads a small demo scene (`examples/starter`). In the workshop, type what you want in the box at the bottom and press Enter.
 
 ## Controls
 
@@ -94,6 +97,18 @@ The in-app labels are in Traditional Chinese; the English meaning is in brackets
 Typed or spoken commands that run locally (no AI): *save as part called turret*, *undo*, *delete*, *ungroup*, *duplicate 3*, *glue*, *rewind*, *activate*, *physics on* — or the Chinese equivalents 「把這疊存成零件，叫砲台」「復原」「刪除」「拆開」「複製 3 個」「黏起來」「倒轉」「啟動」「打開物理」.
 
 Prompts can be written in any language Codex understands; part names follow the language of your request.
+
+## Game rooms: make a game, play it together
+
+The home page (`/`) has three doors: 🎮 **Game rooms** (`/?games`), the **tutorial** (`/?play`) and the **free workshop** (`/?ws`).
+
+1. **Make a game** (`/?edit=new`) — everything is a button: the tool (any toolbox part with a `tool` behaviour; the built-in 能量槍 to start), its colour and fire rate, the arena (range or ring), how many targets and whether they move (moving ones are worth 2 points), and how to win: *first to 3/5/10 points* or *most points in 30/60/90 seconds*. 💾 saves it; ▶ opens a room.
+2. **Play together** (`/?room=CODE`) — friends on the same Wi-Fi open the workshop, tap 🎮 and tap your room (no typing). The host presses ▶ 開始比賽: a 3-second countdown, then everyone holds the blaster in first person — drag to aim at the crosshair, ⚡ to fire, joystick (or WASD) to walk. You see the other players and their shots. The first to the goal (or the best score when time is up) wins; every screen shows the same results.
+3. **Change the rules and play again** — the host taps ✏️ 改規則, picks a new win condition, targets or fire rate, and everyone sees the new rules; they are saved back into the game. Reload the page and you are back in the room with your score; 🚪 leaves.
+
+How it works: a game is plain settings in `data/games.json` (never code — the server does not run anything a player sends). Rooms live in the server's memory: it decides the countdown, the clock, where targets stand and the score, and pushes the state to every player with Server-Sent Events. The player who fires decides the hit; the server checks it is plausible (the game is on, the target is up, not faster than the blaster can fire) before scoring. Tutorial progress is in `data/adventure.json`. Game rooms and the tutorial can only write their own files — never the workshop scene, toolbox or world modules.
+
+A part becomes a tool or a target with `"tool": { "kind": "blaster", … }` or `"target": { "points": 1 }` in `meta.json` (see [`fabricator/AGENTS.md`](fabricator/AGENTS.md)); a composite that contains a tool is a tool too. Hold it with ▶ 操作 anywhere in the workshop: shots push whatever they hit and targets count points.
 
 ## Change the world: environments and rules
 
@@ -219,6 +234,14 @@ npm run test:physics     # iPhone: fall and stack, Ultrahand, glue, shake off, f
 npm run test:xr          # VR on an emulated Quest 3 (IWER): controller grab, follow, wrist turn, release, hand pinch — physics on and off
 npm run test:photo       # 📷 from an iPhone on the LAN: shrunk, location data removed, attached to Codex (starts its own server with a fake Codex)
 npm run test:examples    # every example in fabricator/examples passes the real validator (no server needed)
+
+# Tutorial and game rooms: run each against its own throwaway data folder on 127.0.0.1 (CODEX_BIN points nowhere on purpose)
+DATA_DIR=/tmp/vw-adv-data PORT=5312 HOST=127.0.0.1 CODEX_BIN=/nonexistent/codex npm start &
+npm run test:adventure   # phone and desktop play the tutorial from the home page with real touch / mouse: rescues, reload, replay, workshop files untouched, 0 AI jobs
+DATA_DIR=/tmp/vw-room-data PORT=5313 HOST=127.0.0.1 CODEX_BIN=/nonexistent/codex npm start &
+BASE=http://127.0.0.1:5313 npm run test:rooms    # two players over HTTP + SSE: same countdown, targets, score and results; rule change; reconnect; room isolation
+BASE=http://127.0.0.1:5313 DATA_DIR=/tmp/vw-room-data npm run test:coplay   # a phone and a desktop browser: make a game, join, shoot, shared results, change rules, play again, leave, reopen
+BASE=http://127.0.0.1:5313 npm run test:tools    # the blaster in the free workshop: aim, hit a target, push it, hold to keep firing
 WITH_CODEX=1 npm run bench   # fixed prompts (SET=hard: drive, fly, wear, devices, rules): success, time, validator rounds, a snapshot, and a try-out of every result with today's validator and ⚡ (uses Codex quota)
 WITH_CODEX=1 npm test    # also runs a real build and modification (uses Codex quota)
 ```
@@ -235,7 +258,11 @@ fabricator/examples/    working examples Codex reads first
 fabricator/snapshot.mjs  "look at your work" (asks the server for snapshot.png)
 fabricator/snapshotter.mjs  server-side renderer for snapshots and toolbox thumbnails
 public/runtime.mjs      part assembly shared by the browser and the validator (nesting and limits)
-public/app.js           the workshop: scene, selection, drag-to-stack, toolbox, voice, WebXR
+public/app.js           the workshop: scene, selection, drag-to-stack, toolbox, voice, WebXR; picks the page (home, tutorial, game rooms, workshop)
+public/adventure.mjs    the tutorial: three levels, snapping, rescue, results
+public/game.mjs         game rooms in the browser: hub, game editor, room (lobby, first person, scoreboard, results)
+public/tools.mjs        behaviour props shared by the browser and the validator: blaster shots, hits, targets
+rooms.mjs               game definitions and rooms on the server: countdown, clock, targets, score, SSE
 public/control.mjs      operation engine: drive, fly, wear (joystick, buttons, keyboard)
 public/worldhost.mjs    world-module host shared by the browser and the validator (isolation, cleanup, watchdog)
 public/worlds.mjs       the 🌍 world tab: enable / disable, rollback, safe mode
@@ -258,6 +285,10 @@ tests/                  Playwright tests (desktop and phone)
 - Ultrahand isn't in VR yet; VR controllers still use the simple grab-and-stack.
 - Operate mode isn't available inside VR yet.
 - Environments must keep the middle 28 m flat; vehicles don't follow terrain yet.
+- Game rooms work for players on the same computer or the same Wi-Fi (friends need the workshop's access-key link once). There is no way yet for a friend outside your network to join, and no accounts.
+- Rooms live in the server's memory: restarting the server closes open rooms (the games themselves are saved).
+- One game type so far (target shooting with a blaster); the editor sets its tool, targets and win rule. Hits are decided by the shooter's device and checked for plausibility by the server — fine among friends, not cheat-proof.
+- The tutorial and game rooms are not available inside VR yet.
 
 ## License
 

@@ -7,14 +7,25 @@ import { createControlEngine, guessMode, MODES } from './control.mjs';
 import { createWorldManager } from './worlds.mjs';
 import { createPhysics, PHYS } from './physics.mjs';
 import { createAdventure, buildTitleScene, ADVENTURE_PARTS } from './adventure.mjs';
+import { createTools, findTool, normalizeTarget } from './tools.mjs';
+import { createGame } from './game.mjs';
 
 const $ = (sel) => document.querySelector(sel);
-// 三種畫面：首頁（/）、冒險（/?play）、自由工坊（/?ws；舊網址帶 physics、safe 參數的也直接進工坊）
+// 四種畫面：首頁（/）、新手教學（/?play）、遊戲房（/?games、/?edit=、/?room=）、自由工坊（/?ws；舊網址帶 physics、safe 參數的也直接進工坊）
 const params = new URLSearchParams(window.location.search);
-const MODE = params.has('play') ? 'play' : params.has('ws') || params.has('physics') || params.has('safe') ? 'workshop' : 'title';
+const MODE = params.has('play')
+  ? 'play'
+  : params.has('games') || params.has('edit') || params.has('room')
+    ? 'game'
+    : params.has('ws') || params.has('physics') || params.has('safe')
+      ? 'workshop'
+      : 'title';
 document.body.classList.add(`mode-${MODE}`);
 let adventure = null;
 let titleScene = null;
+let game = null;
+// 每種畫面能寫的 API：首頁不寫、教學只寫教學存檔、遊戲房只寫遊戲與房間；自由工坊的場景、工具箱、世界模組只有工坊能動
+const WRITABLE = { title: /^$/, play: /^\/api\/adventure$/, game: /^\/api\/(games|rooms)(\/|$)/ };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const r3 = (v) => Math.round(v * 1000) / 1000;
 const T0 = performance.now();
@@ -214,6 +225,37 @@ const phys = createPhysics({
   now: () => performance.now(),
 });
 
+// 道具行為（能量槍會射、標靶會被打中）：零件在 meta.json 宣告 tool／target，拿在手上（穿戴）按 ⚡ 就會射。
+// 工坊裡打中東西會把它推開、打中標靶會計分；遊戲房裡打中標靶交給伺服器算分。
+const tools = createTools({
+  THREE,
+  scene,
+  camera,
+  engine,
+  partOf: (id) => runtime.parts.get(id),
+  hittables: () => toolTargets(),
+  onFire: (s) => game?.onFire(s),
+  onHit: (h) => onToolHit(h),
+});
+function toolTargets() {
+  if (MODE === 'game') return game ? game.hittables() : [];
+  if (MODE !== 'workshop') return [];
+  const held = engine.session?.inst;
+  return [...instances.values()]
+    .filter((i) => i !== held && i.object.visible)
+    .map((i) => ({ object: i.object, kind: runtime.parts.get(i.partId)?.target ? 'target' : 'thing', id: i.id, inst: i }));
+}
+let toolScore = 0;
+function onToolHit(h) {
+  if (MODE === 'game') return game?.onHit(h);
+  if (!h.inst) return;
+  if (phys.ready) phys.apiFor('tools').push({ id: h.inst.id }, h.dir.map((v) => v * 3)); // 打中就推一下
+  if (h.kind === 'target') {
+    toolScore += normalizeTarget(runtime.parts.get(h.inst.partId)?.target)?.points || 1;
+    toast(`🎯 命中「${partName(h.inst.partId)}」！累計 ${toolScore} 分`, 1500);
+  }
+}
+
 // 世界模組：環境（天空地面燈光天氣）與規則（重力、玩法、開車手感），由 Codex 寫、當場裝卸
 function objectHandles() {
   const held = engine.session?.inst;
@@ -253,7 +295,7 @@ const worlds = createWorldManager({
 
 async function api(method, url, body, opts = {}) {
   // 首頁和冒險模式只准寫冒險存檔：自由工坊的場景、工具箱、世界模組、打造一律不碰
-  if (MODE !== 'workshop' && method !== 'GET' && url !== '/api/adventure') throw new Error('冒險模式不會改動自由工坊');
+  if (MODE !== 'workshop' && method !== 'GET' && !WRITABLE[MODE].test(url)) throw new Error('冒險模式不會改動自由工坊');
   const res = await fetch(url, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
@@ -550,7 +592,7 @@ renderer.domElement.addEventListener(
     raycaster.setFromCamera(pointer, camera);
     let hit = pickFromRaycaster();
     // 冒險模式：只有這一關要搬的東西抓得起來，其他的當作空白處（拖了轉視角）
-    if (MODE === 'play' && hit && !adventure?.canGrab(hit.inst)) hit = null;
+    if (MODE !== 'workshop' && hit && !(MODE === 'play' && adventure?.canGrab(hit.inst))) hit = null;
     down = { x: e.clientX, y: e.clientY, hit: hit?.inst || null };
     if (!hit) return; // 點在空白處：交給 OrbitControls 轉視角
     controls.enabled = false;
@@ -1752,7 +1794,13 @@ function startControl(inst, mode, { remember = false } = {}) {
   hint.classList.remove('fade');
   clearTimeout(startControl.hintTimer);
   startControl.hintTimer = setTimeout(() => hint.classList.add('fade'), 5000);
-  hint.textContent = {
+  const aiming = mode === 'wear' && !!findTool(inst.partId, (id) => runtime.parts.get(id));
+  document.body.classList.toggle('aiming', aiming);
+  hint.textContent = aiming
+    ? isTouch
+      ? '拖曳畫面瞄準（中間的準星），⚡ 發射；搖桿走路'
+      : '拖曳畫面瞄準（中間的準星），⚡ 或空白鍵發射；WASD 走路、Esc 離開'
+    : {
     drive: isTouch ? '左下搖桿：往上是油門、往下倒車、左右轉彎' : 'W／S 油門倒車、A／D 轉彎、空白鍵動作、Esc 離開',
     fly: isTouch ? '搖桿控制方向，▲▼ 升降' : 'WASD 方向、E 升 Q 降、空白鍵動作、Esc 離開',
     wear: isTouch ? '搖桿走路，拖曳畫面看四周，⚡ 是動作' : 'WASD 走路、拖曳看四周、空白鍵動作、Esc 離開',
@@ -1773,7 +1821,7 @@ function stopControl() {
   const inst = engine.session.inst;
   engine.stop();
   joyReset();
-  document.body.classList.remove('controlling');
+  document.body.classList.remove('controlling', 'aiming');
   $('#ctlHud').hidden = true;
   if (instances.has(inst.id)) selectOnly(inst.id);
   scheduleSave();
@@ -2053,8 +2101,10 @@ renderer.setAnimationLoop(() => {
       }
     }
   }
+  tools.update(dt); // 道具（能量槍）：要在 engine.update 之前，才讀得到這一格按下的 ⚡
   engine.update(dt);
   adventure?.update(dt, t); // 在物理之前：吸附、救援搬動的東西這一格就讓物理跟過去
+  game?.update(dt, t);
   if (titleScene) {
     titleScene.update(dt, t);
     const a = t * 0.12;
@@ -2115,10 +2165,10 @@ async function initTitle() {
     const p = adv.adventure?.progress;
     const names = ['點亮能量塔', '組裝探險車', '開到信號塔'];
     if (p && p.level <= 3 && !(p.level === 1 && p.step === 'intro')) {
-      $('#titlePlay').textContent = `▶ 繼續冒險（第 ${p.level} 關：${names[p.level - 1]}）`;
+      $('#titlePlay').innerHTML = `▶ 繼續新手教學<small>第 ${p.level} 關：${names[p.level - 1]}</small>`;
       $('#titleRestart').hidden = false;
     } else if (p && p.level > 3) {
-      $('#titlePlay').textContent = '▶ 再玩一次冒險';
+      $('#titlePlay').innerHTML = '▶ 再玩一次新手教學<small>小紅的信號塔（3 關）</small>';
       const best = p.best;
       if (best) {
         $('#titleSave').hidden = false;
@@ -2131,6 +2181,7 @@ async function initTitle() {
     $('#titleSave').textContent = `連不到工坊伺服器：${e.message}`;
   }
 }
+$('#titleGames').onclick = () => (window.location.href = '/?games');
 $('#titlePlay').onclick = () => (window.location.href = $('#titlePlay').dataset.fresh ? '/?play&new' : '/?play');
 $('#titleRestart').onclick = () => (window.location.href = '/?play&new');
 $('#titleFree').onclick = () => (window.location.href = '/?ws');
@@ -2185,10 +2236,45 @@ async function initPlay() {
   }
 }
 
+// 遊戲房：玩家做的遊戲＋多人房間（只用工具箱裡的零件；不開物理、不載入世界模組，也不碰自由工坊的場景）
+async function initGame() {
+  envAdapter.pad(false);
+  try {
+    const state = await api('GET', '/api/state');
+    library = state.library.parts || [];
+    runtime.setLibrary(library);
+    game = createGame({
+      THREE,
+      scene,
+      camera,
+      controls,
+      renderer,
+      runtime,
+      engine,
+      tools,
+      isTouch,
+      api,
+      toast: (m, ms) => toast(m, ms),
+      addInstance,
+      removeInstance,
+      startControl,
+      stopControl,
+      loadPartsFor,
+      goTo,
+    });
+    loaded = true; // 遊戲房不存場景（saveNow 什麼都不做）
+    await game.init();
+  } catch (e) {
+    console.error(e);
+    toast(`⚠️ 遊戲房載入失敗：${e.message}`, 8000);
+  }
+}
+
 async function init() {
   camera.getWorldPosition(player.position);
   if (MODE === 'title') return initTitle();
   if (MODE === 'play') return initPlay();
+  if (MODE === 'game') return initGame();
   try {
     const state = await api('GET', '/api/state');
     library = state.library.parts || [];
@@ -2264,6 +2350,15 @@ window.__ws = {
   // 冒險模式的狀態（只讀；自動測試用來找東西在哪，不提供跳關）
   get adventure() {
     return adventure ? adventure.state() : null;
+  },
+  get game() {
+    return game ? game.state() : null;
+  },
+  get shots() {
+    return tools.count;
+  },
+  get shotsFired() {
+    return tools.fired;
   },
   screenOf(id, where = 'center') {
     const b = worldBox(instances.get(id));

@@ -396,6 +396,7 @@ export function createRooms({ log = () => {}, hasTool, onEnded = () => {} }) {
         const next = cleanGame({ ...room.game, ...body.game, tool: { ...room.game.tool, ...(body.game?.tool || {}) } }, { hasTool });
         room.game = next;
         layout(room);
+        room.phase = 'lobby'; // 回到房間大廳，大家看到新規則再開始
         note(room, `規則改成：${describeRule(next)}`);
         return { ok: true, game: next };
       }
