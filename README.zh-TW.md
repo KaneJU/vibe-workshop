@@ -17,6 +17,7 @@
 - **原地改造**：選一個 AI 做的物件，說「改成紅色」，新版本會在原位置換上。
 - **連世界本身都能改**：說「把這裡變成月球表面」或「加上重力」，Codex 會寫出環境或規則，當場換進正在跑的世界。連開車引擎都能被規則改掉（「車子開快一點而且會甩尾」）。
 - **真的物理，借鏡《薩爾達傳說：王國之淚》**：東西會掉、會倒、會被撞開。用究極手抓起來、丟出去、黏成裝置，裝上風扇、輪子、氣球、火箭，開走自己做的載具，還能用時光倒轉讓東西退回去。
+- **AI 會檢查自己的作品**：交件前，Codex 會看自己做的東西的四個角度；驗收程式會抓出它亂編的指令，裝置還會在物理引擎裡實際開一開。工具箱每個零件都有縮圖。
 - **做出來的東西能開、能飛、能戴**：選一個物件按「▶ 操作」：車子能開、飛天車能飛、手套能戴在手上。手機有拇指搖桿和 ⚡ 動作鍵，電腦用 WASD 和空白鍵。
 - **全部自動存檔**：場景和工具箱都會自動儲存，關掉分頁之後再開都還在。
 - **電腦、手機、VR 都能用**：滑鼠鍵盤、適合手機的觸控版面，以及實驗中的 WebXR 模式（用手把抓起來、疊上去）。
@@ -27,14 +28,18 @@
 
 Codex 不是在生成網格或圖片，而是**寫 60～80 行的 JavaScript**，用基本形狀（方塊、圓柱、球、圓環、旋轉曲面、擠出形狀）照公尺尺寸一塊塊組出物件，再加上金屬或發光材質，需要的話還會寫動畫。
 
-每次打造都會開一個小小的工作資料夾，裡面有四樣東西：
+每次打造都會開一個小小的工作資料夾，裡面有六樣東西：
 
 | | 內容 | 作用 |
 |---|---|---|
-| 1 | 任務單（[`server.mjs`](server.mjs) 的 `taskPrompt()`） | 只有四行：使用者說了什麼、要新做還是改造、「寫出 `part.js` 和 `meta.json`，跑驗收直到 PASS」。 |
-| 2 | [`fabricator/AGENTS.md`](fabricator/AGENTS.md) | 施工規格書：單位公尺、原點在底部中心、正面朝 +Z、`ctx` 介面、動畫寫法、效能預算、禁止使用的功能、擺放規則。 |
-| 3 | `context.json` | 使用者說的話、目前選了什麼、附近有什麼、使用者站在哪，以及工具箱裡每個零件的名字和尺寸。 |
-| 4 | [`fabricator/validate.mjs`](fabricator/validate.mjs) | 真的在 Node 裡把零件組出來、跑 90 格動畫，檢查尺寸、有沒有貼地、面數和燈光預算、有沒有用到禁止的功能，卡住超過 10 秒就判失敗。Codex 自己跑、沒過就改；伺服器收件前會再驗一次。 |
+| 1 | 任務單（[`server.mjs`](server.mjs) 的 `taskPrompt()`） | 幾行字：使用者說了什麼、要新做還是改造，以及「先看最接近的範例，寫出 `part.js` 和 `meta.json`，跑驗收直到 PASS，再看一眼照片」。 |
+| 2 | [`fabricator/AGENTS.md`](fabricator/AGENTS.md) | 施工規格書：單位公尺、原點在底部中心、正面朝 +Z、`ctx` 介面、動畫寫法、物理與裝置、效能預算、禁止使用的功能、擺放規則。 |
+| 3 | [`fabricator/examples/`](fabricator/examples) | 七個做對了的範例（車、手套、風扇裝置、用現成零件排的圓環、一個環境、兩個規則）。Codex 會先打開最接近的那個；另有測試確保範例一直都能通過驗收。 |
+| 4 | `context.json` | 使用者說的話、選了什麼、附近有什麼——連同每個東西「是什麼」（說明、能不能開、是不是裝置、會不會動、有沒有黏著）——使用者站在哪，以及工具箱裡每個零件的名字和尺寸。 |
+| 5 | [`fabricator/validate.mjs`](fabricator/validate.mjs) | 真的在 Node 裡把零件組出來、跑 90 格動畫；檢查尺寸、貼地、預算和禁止的功能；讀到不存在的 `ctx`／`world` 成員（AI 亂編的）就判不及格；提醒還留著 TODO 或空殼的程式；把零件丟到地上看會不會倒；裝置還會放進真的物理引擎開一開（風扇推不推得動、氣球會不會浮、四個這種輪子裝上木板開不開得動）。卡住超過 10 秒就判失敗。 |
+| 6 | [`fabricator/snapshot.mjs`](fabricator/snapshot.mjs) | 「看看自己做的東西」：伺服器把正面、側面、上方、斜角拍成 `snapshot.png`，Codex 用看圖工具打開，對照使用者要的東西檢查。Codex 的沙盒裡開不了瀏覽器，所以工作資料夾和伺服器用「傳紙條」交接。 |
+
+Codex 自己跑驗收直到 PASS；伺服器收件前會再驗一次，沒過就把錯誤交給一個新的 Codex 再修一次。如果是 OpenAI 那邊太忙（429、模型滿載），會等一下自動重跑（不算一次），排隊中的工作也先緩一緩；如果是 Codex 額度用完，就直接說額度用完，不白白重試。
 
 「套層」其實就是程式。八個能量方塊排成一圈，核心大概就是這樣：
 
@@ -124,6 +129,19 @@ npm start
 
 <img src="docs/screenshot-ultrahand.jpg" width="220" alt="究極手：抓著風扇靠到小車上，黏合按鈕亮起來"> <img src="docs/screenshot-pilot.jpg" width="220" alt="駕駛左納烏小車"> <img src="docs/screenshot-balloon.jpg" width="220" alt="兩個氣球吊起一塊木板">
 
+## 站在別人的肩膀上
+
+「用說的把世界變出來」不是我們第一個做的。我們借了這些點子（並註明出處）：
+
+| 來源 | 學了什麼 |
+|---|---|
+| [微軟 LLMR](https://github.com/microsoft/LLMR)（CHI 2024）：用說的在 Unity 場景裡造物件和行為 | 告訴 AI 每個東西「是做什麼的」，不只位置；失敗時帶著錯誤再修一次；用固定題目量成績（`npm run bench`），不憑感覺 |
+| [Google XR Blocks／Vibe Coding XR](https://github.com/google/xrblocks)（2026）：Gemini 一句話做出 WebXR 小程式 | 規格書旁邊放做對的範例；抓出 AI 亂編的 API；測「實際用起來」，不只測「打得開」 |
+| [Meta Immersive Web SDK](https://github.com/facebook/immersive-web-sdk) 和 [IWER](https://github.com/meta-quest/immersive-web-emulation-runtime) | 用模擬的 Quest 3 測 VR 模式（`npm run test:xr`），抓到一個真的 bug：物理開著時用手把抓東西，東西會跳開 2.4 公尺；現在 VR 抓取改走究極手，跟他們「抓取交給物理」的設計一樣 |
+| [LLMER](https://arxiv.org/abs/2502.02441) | 還沒採用：簡單的規則讓 AI 填設定、不寫程式，比較不會壞 |
+
+我們不一樣的地方：世界會留住你做的每樣東西（疊起來、存成零件、再拿來做新東西）、玩起來像王國之淚，而且瞄準一般人的 iPhone 加上自己的 AI 訂閱。
+
 ## 操作：開車、飛行、穿戴
 
 選一個物件按 **▶ 操作**，或直接說「開車」「起飛」「戴上」。
@@ -195,6 +213,9 @@ npm run test:mobile      # 模擬 iPhone 走區網：通行碼、抽屜、手指
 npm run test:control     # iPhone：開車、換成飛行、穿戴、選單、彈指；再加電腦 WASD
 npm run test:world       # iPhone：月球、重力、甩尾、出錯隔離、換版退回、太慢自動拔掉、安全模式
 npm run test:physics     # iPhone：掉落與疊放、究極手、黏合、搖一搖拆下、風扇、氣球、操縱桿小車、時光倒轉、改重力的規則、重新整理
+npm run test:xr          # 模擬 Quest 3（IWER）進 VR：手把抓、跟著走、轉手腕、放開、手勢捏——物理開關各一輪
+npm run test:examples    # fabricator/examples 裡每個範例都要通過真的驗收（不用開伺服器）
+WITH_CODEX=1 npm run bench   # 固定題目：成功與否、時間、驗收輪數，每個成品拍一張照（會用 Codex 額度）
 WITH_CODEX=1 npm test    # 再加跑一次真的打造和改造（會用 Codex 額度）
 ```
 
@@ -206,6 +227,9 @@ WITH_CODEX=1 npm test    # 再加跑一次真的打造和改造（會用 Codex �
 server.mjs              網頁伺服器、存檔、派工給 Codex、通行碼
 fabricator/AGENTS.md    給 Codex 的零件規格書
 fabricator/validate.mjs 零件驗收程式（Codex 也會自己跑）
+fabricator/examples/    Codex 開工前先看的範例
+fabricator/snapshot.mjs  「看看自己做的東西」（請伺服器拍 snapshot.png）
+fabricator/snapshotter.mjs  伺服器端的拍照程式（給 Codex 看的照片、工具箱縮圖）
 public/runtime.mjs      瀏覽器和驗收共用的零件組裝核心（套層與數量上限）
 public/app.js           工坊本體：場景、選取、拖曳疊放、工具箱、語音、WebXR
 public/control.mjs      操作引擎：開車、飛行、穿戴（搖桿、按鈕、鍵盤）
@@ -221,9 +245,9 @@ tests/                  Playwright 測試（電腦版與手機版）
 ## 限制與接下來
 
 - 介面目前只有繁體中文。
-- VR 模式（進入 VR、用手把抓起來疊）還沒在真的頭盔上測過，VR 裡也還不能用說的打造。
+- VR 模式已經用模擬的 Quest 3 測過（抓、移動、轉、放開、手勢捏），還沒在真的頭盔上測，VR 裡也還不能用說的打造。
 - 頭盔要 HTTPS 才能進 WebXR，瀏覽器也要 HTTPS 才給網頁用麥克風。在區網用 http 連時，請改用手機鍵盤的聽寫。
-- AI 看不到自己做出來的樣子，只看得到驗收回報的數字。下一步想讓它截圖、自己看、自己修。
+- AI 看的是四張靜態照片，還不會看動畫、也不會用眼睛試操作。縮圖和照片需要 Playwright 的 Chromium（`npx playwright install chromium`）；沒有的話其他功能照常。
 - 碰撞形狀是凸包：桌子的桌腳和桌面會被當成一整塊實心的。用好幾個子零件組成（或黏起來）的東西，會保留真正的形狀。
 - 物理是在每個打開的頁面裡算的。同一時間請只在一台裝置上開著工坊，不然兩邊的模擬會互相蓋掉存檔。
 - VR 裡還沒有究極手，用手把抓東西還是原本簡單的抓起來、疊上去。

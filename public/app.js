@@ -935,6 +935,7 @@ async function groupSelected(name) {
   library.push(rec);
   runtime.addPart(rec);
   renderLibrary();
+  if (rec.thumbPending) waitForThumb(rec);
   pushUndo();
   for (const i of sel) removeInstance(i.id, { save: false });
   const inst = addInstance(
@@ -1045,6 +1046,19 @@ function placeInstance(inst, placement, anchorId) {
 
 // ---------------- 打造（Codex） ----------------
 
+// 給 Codex 的場景說明：不只位置大小，也說「這是做什麼的」（借鏡微軟 LLMR：知道每個東西的用途，「讓它停下來」這種話才接得住）
+function whatItIs(i) {
+  const part = runtime.parts.get(i.partId);
+  const yaw = new THREE.Euler().setFromQuaternion(i.object.quaternion, 'YXZ').y;
+  return {
+    description: String(part?.description || '').slice(0, 80),
+    yawDeg: Math.round(THREE.MathUtils.radToDeg(yaw)),
+    ...(part?.controls ? { controls: part.controls } : {}),
+    ...(part?.device?.kind ? { device: part.device.kind } : {}),
+    ...(i.updaters.length ? { animated: true } : {}),
+    ...(i.glue ? { gluedTo: glueMembers(i).filter((m) => m !== i).map((m) => partName(m.partId)).slice(0, 6) } : {}),
+  };
+}
 function describeInstance(i) {
   const b = worldBox(i);
   return {
@@ -1055,6 +1069,7 @@ function describeInstance(i) {
     size: b.getSize(new THREE.Vector3()).toArray().map(r3),
     position: i.object.position.toArray().map(r3),
     top: r3(b.max.y),
+    ...whatItIs(i),
   };
 }
 function sceneSummary() {
@@ -1069,6 +1084,7 @@ function sceneSummary() {
         partId: i.partId,
         position: i.object.position.toArray().map(r3),
         size: b.getSize(new THREE.Vector3()).toArray().map(r3),
+        ...whatItIs(i),
       };
     });
 }
@@ -1272,6 +1288,8 @@ function updateJobCard(card, job) {
     err.hidden = false;
     err.textContent = job.error || '';
   }
+  const made = job.part || job.module;
+  if (job.status === 'done' && made?.thumb && !card.querySelector('.thumb')) addThumb(card, `/thumbs/${made.id}.jpg`);
   if (['done', 'error', 'cancelled'].includes(job.status)) {
     card.querySelector('.jcancel')?.remove();
     if (job.status !== 'done' && !card.querySelector('.jretry')) {
@@ -1400,6 +1418,7 @@ function renderLibrary() {
     if (p.kind === 'composite') badge.classList.add('combo');
     const size = (p.size || []).map((v) => Number(v).toFixed(2)).join(' × ');
     item.querySelector('.desc').textContent = `${p.description || ''}${size ? `（${size} m）` : ''}`;
+    if (p.thumb) addThumb(item, `/thumbs/${p.id}.jpg`);
     item.onclick = () => spawnFromLibrary(p.id);
     item.querySelector('.rm').onclick = async (ev) => {
       ev.stopPropagation();
@@ -1413,6 +1432,34 @@ function renderLibrary() {
       }
     };
     el.appendChild(item);
+  }
+}
+
+// 縮圖（伺服器拍的斜角照）；載不到就拿掉，卡片照常顯示文字
+function addThumb(card, src) {
+  const img = document.createElement('img');
+  img.className = 'thumb';
+  img.loading = 'lazy';
+  img.alt = '';
+  img.src = src;
+  img.onerror = () => {
+    img.remove();
+    card.classList.remove('has-thumb');
+  };
+  card.prepend(img);
+  card.classList.add('has-thumb');
+}
+
+// 剛存的組合零件：縮圖在伺服器背景拍，拍好了再補上卡片
+async function waitForThumb(rec) {
+  for (let i = 0; i < 8; i += 1) {
+    await new Promise((r) => setTimeout(r, 1500));
+    const r = await api('GET', `/api/thumbs/${rec.id}`, null, { cache: 'no-store' }).catch(() => null);
+    if (r?.ready) {
+      rec.thumb = true;
+      renderLibrary();
+      return;
+    }
   }
 }
 
@@ -1514,6 +1561,9 @@ vrBtn.onclick = async () => {
 
 const controllerFactory = new XRControllerModelFactory();
 const tempMatrix = new THREE.Matrix4();
+// VR 手把／手（捏）：物理開著時走究極手——東西跟著手把指到的那一點走、跟著手腕轉，放手順著手勢丟出去；
+// 物理關著時才把東西掛在手把上（掛上去的話物理引擎會用世界座標去寫它的位置，兩邊打架）
+const xrControllers = [];
 function onXRSelectStart(e) {
   const ctrl = e.target;
   tempMatrix.identity().extractRotation(ctrl.matrixWorld);
@@ -1523,11 +1573,41 @@ function onXRSelectStart(e) {
   if (!hit) return;
   pushUndo();
   selectOnly(hit.inst.id);
+  if (phys.ready) {
+    for (const c of xrControllers) c.userData.grab = null; // 一次只能抓一個（另一隻手放開）
+    if (!phys.grab(hit.inst, hit.point)) return;
+    ctrl.userData.grab = {
+      inst: hit.inst,
+      local: ctrl.worldToLocal(hit.point.clone()),
+      ctrlQ0: ctrl.getWorldQuaternion(new THREE.Quaternion()),
+      objQ0: phys.holdQuaternion,
+    };
+    return;
+  }
   ctrl.attach(hit.inst.object);
   ctrl.userData.held = hit.inst;
 }
+function updateXRGrabs() {
+  for (const ctrl of xrControllers) {
+    const g = ctrl.userData.grab;
+    if (!g) continue;
+    if (!phys.holding) {
+      ctrl.userData.grab = null; // 被別的東西接手了（例如抓著時關掉物理）
+      continue;
+    }
+    phys.moveHold(ctrl.localToWorld(g.local.clone()));
+    const turn = ctrl.getWorldQuaternion(new THREE.Quaternion()).multiply(g.ctrlQ0.clone().invert());
+    phys.setHoldQuaternion(turn.multiply(g.objQ0));
+  }
+}
 function onXRSelectEnd(e) {
   const ctrl = e.target;
+  if (ctrl.userData.grab) {
+    ctrl.userData.grab = null;
+    phys.release();
+    scheduleSave();
+    return;
+  }
   const inst = ctrl.userData.held;
   if (!inst) return;
   world.attach(inst.object);
@@ -1547,6 +1627,7 @@ for (let i = 0; i < 2; i += 1) {
   ctrl.add(ray);
   ctrl.addEventListener('selectstart', onXRSelectStart);
   ctrl.addEventListener('selectend', onXRSelectEnd);
+  xrControllers.push(ctrl);
   rig.add(ctrl);
   const grip = renderer.xr.getControllerGrip(i);
   grip.add(controllerFactory.createControllerModel(grip));
@@ -1890,6 +1971,7 @@ renderer.setAnimationLoop(() => {
   }
   engine.update(dt);
   worlds.update(dt, t);
+  if (renderer.xr.isPresenting) updateXRGrabs();
   if (holdLiftDir && drag?.physics && drag.started) {
     drag.lift += holdLiftDir * 1.5 * dt;
     updateHoldTarget();
@@ -1941,6 +2023,7 @@ init();
 // 給自動測試用
 window.__ws = {
   THREE,
+  renderer,
   scene,
   camera,
   controls,
@@ -1963,6 +2046,7 @@ window.__ws = {
   clearSelection,
   spawnFromLibrary,
   worldBox,
+  addThumb,
   engine,
   worlds,
   envAdapter,

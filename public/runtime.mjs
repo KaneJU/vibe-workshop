@@ -29,6 +29,17 @@ export function mulberry32(seed) {
 
 const PLACEHOLDER_COLORS = { missing: 0x8a8f98, depth: 0xffc23d, budget: 0xffc23d, error: 0xff4d5e };
 
+// 驗收用：記下程式讀了哪些「不存在的成員」（例如 ctx.time、world.env.sky）——AI 編出來的 API 最常讓東西壞掉
+const NOT_API = new Set(['then', 'toJSON', 'constructor', 'valueOf', 'toString', 'prototype', '$$typeof', 'asymmetricMatch', 'nodeType', 'inspect']);
+export function watchMembers(obj, label, seen) {
+  return new Proxy(obj, {
+    get(target, key, receiver) {
+      if (typeof key === 'string' && !NOT_API.has(key) && !(key in target)) seen.add(`${label}.${key}`);
+      return Reflect.get(target, key, receiver);
+    },
+  });
+}
+
 export function makePlaceholder(THREE, kind = 'missing') {
   const group = new THREE.Group();
   const geo = new THREE.BoxGeometry(0.4, 0.4, 0.4);
@@ -39,7 +50,7 @@ export function makePlaceholder(THREE, kind = 'missing') {
   return group;
 }
 
-export function createRuntime({ THREE, player }) {
+export function createRuntime({ THREE, player, strict = false }) {
   const parts = new Map(); // id -> part record
   const modules = new Map(); // id -> build function
 
@@ -102,9 +113,9 @@ export function createRuntime({ THREE, player }) {
         return makePlaceholder(THREE, 'missing');
       }
       let spawnIndex = 0;
-      const ctx = {
-        THREE,
-        player,
+      let ctx = {
+        THREE: strict ? watchMembers(THREE, 'THREE', state.unknownThree) : THREE,
+        player: strict ? watchMembers(player, 'ctx.player', state.unknownApi) : player,
         random: mulberry32(seed),
         get library() {
           return (state.libraryCache ??= libraryView());
@@ -125,6 +136,7 @@ export function createRuntime({ THREE, player }) {
           }
         },
       };
+      if (strict) ctx = watchMembers(ctx, 'ctx', state.unknownApi);
       try {
         const out = fn(ctx);
         obj = out?.isObject3D ? out : out?.object?.isObject3D ? out.object : null;
@@ -176,6 +188,8 @@ export function createRuntime({ THREE, player }) {
         errors: [],
         missingSpawns: [],
         libraryCache: null,
+        unknownApi: new Set(),
+        unknownThree: new Set(),
       };
       const object = build(id, state, seed ?? hashString(id));
       return {
@@ -185,6 +199,8 @@ export function createRuntime({ THREE, player }) {
         errors: state.errors,
         missingSpawns: state.missingSpawns,
         spawns: state.spawns,
+        unknownApi: state.unknownApi, // strict 模式才會記；update() 之後讀到的也會補進來
+        unknownThree: state.unknownThree,
       };
     },
   };

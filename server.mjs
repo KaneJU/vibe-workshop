@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createSnapshotter } from './fabricator/snapshotter.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 5310);
@@ -32,11 +33,14 @@ const SCENE_FILE = path.join(DATA_DIR, 'scene.json');
 const WORLD_DIR = path.join(DATA_DIR, 'world'); // 世界模組程式（環境、規則）
 const WORLDS_FILE = path.join(DATA_DIR, 'worlds.json');
 const WORLD_STATE_FILE = path.join(DATA_DIR, 'world-state.json');
+const THUMBS_DIR = path.join(DATA_DIR, 'thumbs'); // 工具箱縮圖
 const MAX_CONCURRENT = 2;
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
+const BUSY_WAITS_MS = [30_000, 60_000]; // OpenAI 回「太忙」時，等多久再自動重跑（最多兩次）
 
 await fs.mkdir(PARTS_DIR, { recursive: true });
 await fs.mkdir(WORLD_DIR, { recursive: true });
+await fs.mkdir(THUMBS_DIR, { recursive: true });
 await fs.mkdir(JOBS_DIR, { recursive: true });
 
 async function readJson(file, fallback) {
@@ -94,6 +98,15 @@ if (!existsSync(WORLDS_FILE) && existsSync(path.join(STARTER_DIR, 'worlds.json')
   await fs.copyFile(path.join(STARTER_DIR, 'worlds.json'), WORLDS_FILE);
   if (existsSync(path.join(STARTER_DIR, 'world'))) await fs.cp(path.join(STARTER_DIR, 'world'), WORLD_DIR, { recursive: true });
   log('已載入示範世界模組（examples/starter/worlds.json）');
+}
+
+// 範例附了縮圖：補進來的範例零件、模組直接用，不用開瀏覽器重拍
+if (existsSync(path.join(STARTER_DIR, 'thumbs'))) {
+  for (const f of await fs.readdir(path.join(STARTER_DIR, 'thumbs'))) {
+    if (/^[a-z]_[a-z0-9]+\.jpg$/.test(f) && !existsSync(path.join(THUMBS_DIR, f))) {
+      await fs.copyFile(path.join(STARTER_DIR, 'thumbs', f), path.join(THUMBS_DIR, f));
+    }
+  }
 }
 
 const KEY_FILE = path.join(DATA_DIR, 'access-key');
@@ -158,13 +171,84 @@ const worlds = await readJson(WORLDS_FILE, { modules: [] });
 let worldState = await readJson(WORLD_STATE_FILE, { environment: null, rules: [], safeMode: false });
 const worldById = (id) => worlds.modules.find((m) => m.id === id);
 
+// ---------------- 拍照（讓 Codex 看自己做的東西＋工具箱縮圖） ----------------
+
+const snaps = createSnapshotter({ root: ROOT, partsDir: PARTS_DIR, libraryFile: LIB_FILE, log });
+let snapsUnavailable = false;
+// 重新啟動服務（launchctl kickstart -k）或 Ctrl-C：先關掉拍照用的瀏覽器再結束
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, () => {
+    setTimeout(() => process.exit(0), 3000).unref();
+    snaps.close().finally(() => process.exit(0));
+  });
+}
+
+async function thumbFor(rec, opts) {
+  if (snapsUnavailable) return false;
+  const r = await snaps.render({ ...opts, outThumb: path.join(THUMBS_DIR, `${rec.id}.jpg`) });
+  if (r.unavailable) {
+    snapsUnavailable = true;
+    log('沒有可以拍照的瀏覽器，略過縮圖與 Codex 的看圖檢查（npx playwright install chromium）');
+  }
+  if (r.ok) rec.thumb = true;
+  return r.ok;
+}
+
+// Codex 在沙盒裡開不了瀏覽器：它寫 snapshot.request.json，這裡在沙盒外代拍，結果寫回 snapshot.png／snapshot.result.json
+function watchSnapshots(job, dir) {
+  let lastId = null;
+  let busy = false;
+  const timer = setInterval(async () => {
+    if (busy) return;
+    let req;
+    try {
+      req = JSON.parse(await fs.readFile(path.join(dir, 'snapshot.request.json'), 'utf8'));
+    } catch {
+      return;
+    }
+    if (!req?.id || req.id === lastId) return;
+    lastId = req.id;
+    busy = true;
+    try {
+      const world = req.target === 'world.js';
+      const meta = world ? await readJson(path.join(dir, 'meta.json'), {}) : {};
+      addLog(job, '📸 Codex 在看自己做出來的樣子…');
+      const r = await snaps.render({
+        file: path.join(dir, world ? 'world.js' : 'part.js'),
+        kind: world ? 'world' : 'part',
+        worldType: meta.type === 'rule' ? 'rule' : 'environment',
+        outGrid: path.join(dir, 'snapshot.png'),
+      });
+      job.snapshots = (job.snapshots || 0) + 1;
+      await writeJson(path.join(dir, 'snapshot.result.json'), { id: req.id, ...r });
+    } catch (e) {
+      await writeJson(path.join(dir, 'snapshot.result.json'), { id: req.id, ok: false, error: String(e?.message || e) }).catch(() => {});
+    } finally {
+      busy = false;
+    }
+  }, 400);
+  return () => clearInterval(timer);
+}
+
 // ---------------- 打造工作（Codex） ----------------
 
 const jobs = new Map();
 const queue = [];
 let running = 0;
+let busyUntil = 0; // OpenAI 剛回過「太忙」：這之前先不開新工作，免得排隊的一個接一個撞牆
+let pumpTimer = null;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Codex 失敗的原因如果在 OpenAI 那邊，就不是描述或程式的問題
+function serviceTrouble(message) {
+  const m = String(message || '');
+  if (/usage limit|quota|credits|billing/i.test(m)) return 'quota'; // 額度用完：等一下也沒用
+  if (/429|too many requests|at capacity|overloaded|temporarily unavailable|stream disconnected|\b50[234]\b/i.test(m)) return 'busy';
+  return null;
+}
 
 function addLog(job, line) {
+  if (job.log.at(-1)?.line === line) return; // 同一句不重複（Codex 的 error 和 turn.failed 常是同一句）
   job.log.push({ at: Date.now(), line });
   if (job.log.length > 200) job.log.splice(0, job.log.length - 200);
 }
@@ -184,17 +268,23 @@ function publicJob(job) {
     placement: job.placement,
     error: job.error,
     warnings: job.warnings,
+    stats: { validateRuns: job.validateRuns || 0, snapshots: job.snapshots || 0, attempts: job.attempts || 0 },
   };
 }
 
 function enqueue(job) {
   jobs.set(job.id, job);
   queue.push(job);
-  addLog(job, running >= MAX_CONCURRENT ? '⏳ 排隊中…' : '🚀 準備開工');
+  addLog(job, Date.now() < busyUntil ? '⏳ OpenAI 那邊暫時太忙，等一下自動開工' : running >= MAX_CONCURRENT ? '⏳ 排隊中…' : '🚀 準備開工');
   pump();
 }
 
 function pump() {
+  const wait = busyUntil - Date.now();
+  if (wait > 0) {
+    if (queue.length && !pumpTimer) pumpTimer = setTimeout(() => ((pumpTimer = null), pump()), wait + 100);
+    return;
+  }
   while (running < MAX_CONCURRENT && queue.length) {
     const job = queue.shift();
     if (job.status === 'cancelled') continue;
@@ -255,7 +345,7 @@ function worldSummary() {
   };
 }
 
-function taskPrompt(job) {
+function taskPrompt(job, retryErrors = null) {
   const modeLine =
     job.mode === 'modify'
       ? `Mode: modify — the selected part's current code is in base_part.js; write a full updated part.js.`
@@ -264,10 +354,20 @@ function taskPrompt(job) {
     `You are the fabricator of the "Vibe 工坊" (Vibe Workshop). Follow AGENTS.md exactly.`,
     `The user, standing inside the workshop, said: 「${job.prompt}」`,
     modeLine,
-    `Read context.json. First decide whether this is a part, an environment or a rule (see AGENTS.md).`,
+    `Read context.json. First decide whether this is a part, an environment or a rule (see AGENTS.md), and open the closest example in examples/.`,
     `Write part.js or world.js plus meta.json in this directory, then run \`node validate.mjs\` and fix until it prints PASS.`,
+    `Then run \`node snapshot.mjs\` and look at snapshot.png with your image viewer before you finish.`,
+    ...(retryErrors
+      ? [
+          `A previous attempt in this directory did not pass the final check: ${retryErrors}`,
+          `Read the files already here, keep what works, fix the problem, and run the validator until PASS.`,
+        ]
+      : []),
   ].join('\n');
 }
+
+// 真的在跑驗收（不是 rg／cat 讀驗收程式的原始碼）
+const RUNS_VALIDATOR = /\bnode\s+(?:\.\/)?validate\.mjs\b/;
 
 function summarizeEvent(ev) {
   const item = ev.item || {};
@@ -277,9 +377,9 @@ function summarizeEvent(ev) {
   };
   if (ev.type === 'item.started' && item.type === 'command_execution') {
     const cmd = short(item.command, 70);
-    return /validate\.mjs/.test(cmd) ? '🔍 Codex 正在驗證零件…' : `⚙️ ${cmd}`;
+    return RUNS_VALIDATOR.test(item.command || '') ? '🔍 Codex 正在驗證零件…' : `⚙️ ${cmd}`;
   }
-  if (ev.type === 'item.completed' && item.type === 'command_execution' && /validate\.mjs/.test(item.command || '')) {
+  if (ev.type === 'item.completed' && item.type === 'command_execution' && RUNS_VALIDATOR.test(item.command || '')) {
     const out = String(item.aggregated_output || item.output || '');
     if (/^PASS/m.test(out)) return '✅ 驗證通過';
     if (/^FAIL/m.test(out)) return `🔧 驗證沒過，修正中：${short((out.match(/✗ (.*)/) || [])[1] || '', 60)}`;
@@ -294,15 +394,16 @@ function summarizeEvent(ev) {
   return null;
 }
 
-function runCodex(job, dir) {
+function runCodex(job, dir, retryErrors = null) {
   const args = ['exec', '--skip-git-repo-check', '--ephemeral', '-s', 'workspace-write', '-C', dir, '--json'];
   if (CODEX_MODEL) args.push('-m', CODEX_MODEL);
-  args.push('-o', path.join(dir, 'last-message.txt'), taskPrompt(job));
+  args.push('-o', path.join(dir, 'last-message.txt'), taskPrompt(job, retryErrors));
   return new Promise((resolve, reject) => {
     const proc = spawn(CODEX_BIN, args, { cwd: dir, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
     job.proc = proc;
     let buf = '';
     let stderrTail = '';
+    let failure = null; // Codex 回報的錯誤（例如 429 Too Many Requests）
     const events = [];
     proc.stdout.on('data', (chunk) => {
       buf += chunk.toString();
@@ -313,7 +414,13 @@ function runCodex(job, dir) {
         if (!line) continue;
         events.push(line);
         try {
-          const msg = summarizeEvent(JSON.parse(line));
+          const ev = JSON.parse(line);
+          if (ev.type === 'item.started' && ev.item?.type === 'command_execution' && RUNS_VALIDATOR.test(ev.item.command || '')) {
+            job.validateRuns = (job.validateRuns || 0) + 1;
+          }
+          if (ev.type === 'turn.failed') failure = ev.error?.message || failure;
+          if (ev.type === 'error') failure = failure || ev.message;
+          const msg = summarizeEvent(ev);
           if (msg) addLog(job, msg);
         } catch {
           /* 非 JSON 行忽略 */
@@ -336,7 +443,7 @@ function runCodex(job, dir) {
       job.proc = null;
       await fs.writeFile(path.join(dir, 'events.jsonl'), events.join('\n')).catch(() => {});
       await fs.writeFile(path.join(dir, 'stderr.txt'), stderrTail).catch(() => {});
-      resolve({ code, signal, stderrTail });
+      resolve({ code, signal, stderrTail, failure });
     });
   });
 }
@@ -368,6 +475,8 @@ async function runJob(job) {
   await fs.mkdir(dir, { recursive: true });
   await fs.copyFile(path.join(ROOT, 'fabricator', 'AGENTS.md'), path.join(dir, 'AGENTS.md'));
   await fs.copyFile(path.join(ROOT, 'fabricator', 'validate.mjs'), path.join(dir, 'validate.mjs'));
+  await fs.copyFile(path.join(ROOT, 'fabricator', 'snapshot.mjs'), path.join(dir, 'snapshot.mjs'));
+  await fs.cp(path.join(ROOT, 'fabricator', 'examples'), path.join(dir, 'examples'), { recursive: true });
   if (job.mode === 'modify') {
     await fs.copyFile(path.join(PARTS_DIR, `${job.basePartId}.js`), path.join(dir, 'base_part.js'));
   }
@@ -383,11 +492,42 @@ async function runJob(job) {
   addLog(job, '🧠 Codex 開始設計…');
   log('job start', job.id, job.mode, job.prompt);
 
-  const result = await runCodex(job, dir);
-  if (job.status === 'cancelled') return;
-
-  addLog(job, '🔍 最後檢查…');
-  const report = await runValidator(dir);
+  // 最多兩輪：第一輪沒過最後檢查，就開一個新的 Codex，把錯誤交給它修（借鏡微軟 LLMR 的除錯迴圈）。
+  // OpenAI 那邊太忙（429、模型滿載）不算一輪：等一下自動重跑，同時暫停開新工作。
+  let result;
+  let report;
+  let retryErrors = null;
+  let busyWaits = 0;
+  for (let attempt = 1; attempt <= 2; ) {
+    const stopSnapshots = watchSnapshots(job, dir);
+    try {
+      result = await runCodex(job, dir, retryErrors);
+    } finally {
+      stopSnapshots();
+    }
+    if (job.status === 'cancelled') return;
+    addLog(job, '🔍 最後檢查…');
+    report = await runValidator(dir);
+    job.attempts = attempt;
+    if (report.ok) break;
+    const trouble = serviceTrouble(result.failure);
+    if (trouble === 'quota') throw new Error(`Codex 的額度用完了，等額度恢復再試。（${result.failure}）`);
+    if (trouble === 'busy') {
+      if (busyWaits >= BUSY_WAITS_MS.length) throw new Error(`OpenAI 那邊一直很忙，不是描述的問題，過幾分鐘再試一次。（${result.failure}）`);
+      const wait = BUSY_WAITS_MS[busyWaits++];
+      busyUntil = Math.max(busyUntil, Date.now() + wait);
+      addLog(job, `⏳ OpenAI 那邊暫時太忙，${wait / 1000} 秒後自動再試（不用重按）`);
+      log('job busy', job.id, result.failure);
+      await sleep(wait);
+      if (job.status === 'cancelled') return;
+      continue;
+    }
+    if (attempt === 2) break;
+    addLog(job, `🔁 沒過最後檢查（${String((report.errors || [])[0] || '').slice(0, 60)}），換一個新的 Codex 再修一次`);
+    log('job retry', job.id, (report.errors || [])[0]);
+    retryErrors = (report.errors || []).join('；').slice(0, 1500) || 'no part.js / world.js was written';
+    attempt += 1;
+  }
   if (!report.ok) {
     const hint = result.code !== 0 ? `\nCodex 結束碼 ${result.code}：${result.stderrTail.slice(-400)}` : '';
     throw new Error(`零件沒有通過檢查：${(report.errors || []).join('；')}${hint}`);
@@ -407,6 +547,7 @@ async function runJob(job) {
       jobId: job.id,
       createdAt: new Date().toISOString(),
     };
+    if (mod.type === 'environment') await thumbFor(mod, { file: path.join(WORLD_DIR, `${worldId}.js`), kind: 'world', worldType: 'environment' });
     worlds.modules.push(mod);
     await writeJson(WORLDS_FILE, worlds);
     job.module = mod;
@@ -439,6 +580,7 @@ async function runJob(job) {
   };
   library.parts.push(record);
   await writeJson(LIB_FILE, library);
+  if (await thumbFor(record, { partId })) await writeJson(LIB_FILE, library);
   job.part = record;
   job.placement = report.meta.placement;
   job.warnings = report.warnings || [];
@@ -599,7 +741,12 @@ async function handleApi(req, res, url) {
     library.parts.push(record);
     await writeJson(LIB_FILE, library);
     log('composite', record.id, name, children.length);
-    return send(res, 200, record);
+    send(res, 200, { ...record, thumbPending: !snapsUnavailable });
+    // 縮圖要拍兩秒左右，在背景拍，不讓存零件的人等
+    thumbFor(record, { partId: record.id })
+      .then((ok) => ok && writeJson(LIB_FILE, library))
+      .catch(() => {});
+    return;
   }
 
   if (req.method === 'POST' && p === '/api/generate') {
@@ -635,6 +782,9 @@ async function handleApi(req, res, url) {
   }
 
   let m;
+  if (req.method === 'GET' && (m = p.match(/^\/api\/thumbs\/([a-z]_[a-z0-9]+)$/))) {
+    return send(res, 200, { ready: existsSync(path.join(THUMBS_DIR, `${m[1]}.jpg`)) }); // 剛存的組合零件問「縮圖好了沒」
+  }
   if (req.method === 'GET' && (m = p.match(/^\/api\/jobs\/([\w-]+)$/))) {
     const job = jobs.get(m[1]);
     return job ? send(res, 200, publicJob(job)) : send(res, 404, { error: 'job not found' });
@@ -729,6 +879,8 @@ const server = http.createServer(async (req, res) => {
     if (p.startsWith('/vendor/rapier/')) return serveGzip(req, res, RAPIER_DIR, p.slice('/vendor/rapier/'.length), 'max-age=86400');
     const pm = p.match(/^\/parts\/([a-z]_[a-z0-9]+)\.js$/);
     if (pm) return serveFile(res, PARTS_DIR, `${pm[1]}.js`, 'max-age=31536000, immutable');
+    const tm = p.match(/^\/thumbs\/([a-z]_[a-z0-9]+)\.jpg$/);
+    if (tm) return serveFile(res, THUMBS_DIR, `${tm[1]}.jpg`, 'max-age=86400');
     const wm = p.match(/^\/world\/(w_[a-z0-9]+)\.js$/);
     if (wm) return serveFile(res, WORLD_DIR, `${wm[1]}.js`, 'max-age=31536000, immutable');
     return serveFile(res, PUBLIC_DIR, p === '/' ? 'index.html' : p.slice(1));
@@ -737,6 +889,25 @@ const server = http.createServer(async (req, res) => {
     if (!res.headersSent) send(res, 500, { error: String(err?.message || err) });
   }
 });
+
+// 還沒有縮圖的零件和環境，開機 5 秒後在背景一個一個補拍（一次只開一個瀏覽器分頁）；已經有檔案的（範例附的）直接用
+setTimeout(async () => {
+  let n = 0;
+  const ready = (rec) => existsSync(path.join(THUMBS_DIR, `${rec.id}.jpg`)) && (rec.thumb = true);
+  for (const p of library.parts) {
+    if (p.thumb || p.hidden || snapsUnavailable) continue;
+    if (ready(p) || (await thumbFor(p, { partId: p.id }))) n += 1;
+  }
+  for (const m of worlds.modules) {
+    if (m.thumb || m.hidden || m.type !== 'environment' || snapsUnavailable) continue;
+    if (ready(m) || (await thumbFor(m, { file: path.join(WORLD_DIR, `${m.id}.js`), kind: 'world', worldType: 'environment' }))) n += 1;
+  }
+  if (n) {
+    await writeJson(LIB_FILE, library);
+    await writeJson(WORLDS_FILE, worlds);
+    log(`補上了 ${n} 張縮圖`);
+  }
+}, 5000);
 
 server.listen(PORT, HOST, () => {
   log(`Vibe 工坊 http://localhost:${PORT}`);

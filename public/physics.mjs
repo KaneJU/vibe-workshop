@@ -55,6 +55,8 @@ export const DEVICE_FORCE_RANGE = {
 };
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+// 輪子彼此不碰撞（並排黏很多顆、或兩台車的輪子擦過時才不會互相卡死）；輪子照樣碰地面和其他東西
+const WHEEL_GROUPS = (0x0002 << 16) | (0xffff & ~0x0002);
 
 export function normalizeDevice(d) {
   if (!d || typeof d !== 'object') return null;
@@ -292,6 +294,7 @@ export function createPhysics({
 
   const UP = new THREE.Vector3(0, 1, 0);
   const ONE = new THREE.Vector3(1, 1, 1);
+  const IDENTITY = new THREE.Matrix4();
   const _p = new THREE.Vector3();
   const _q = new THREE.Quaternion();
   const _s = new THREE.Vector3();
@@ -502,7 +505,8 @@ export function createPhysics({
       R.ColliderDesc.ball(radius)
         .setFriction(ph.friction ?? 1.2)
         .setRestitution(0)
-        .setMass(Math.max(0.2, ph.mass ?? spec.mass)),
+        .setMass(Math.max(0.2, ph.mass ?? spec.mass))
+        .setCollisionGroups(WHEEL_GROUPS),
       wb,
     );
     col.userData_friction = ph.friction ?? 1.2;
@@ -654,6 +658,12 @@ export function createPhysics({
         _m2.multiplyMatrices(bodyMatrix(m.driver.wheelBody, new THREE.Matrix4()), m.driver.wheelRel);
       } else {
         _m2.multiplyMatrices(bm, m.rel);
+      }
+      // 物件掛在別的節點底下（不是直接在世界裡）時，換算成相對父節點的位置，不然會整個跳走
+      const parent = o.parent;
+      if (parent && !parent.matrixWorld.equals(IDENTITY)) {
+        parent.updateMatrixWorld(true);
+        _m2.premultiply(new THREE.Matrix4().copy(parent.matrixWorld).invert());
       }
       _m2.decompose(o.position, o.quaternion, _s); // 縮放不從剛體算回來（浮點誤差會讓它慢慢飄）
       o.updateMatrixWorld(true);
@@ -1305,6 +1315,13 @@ export function createPhysics({
     rotateHold(axis, angle) {
       if (!hold) return;
       hold.targetQ.premultiply(new THREE.Quaternion().setFromAxisAngle(axis, angle));
+    },
+    // VR：東西跟著手腕轉（目標姿勢直接給）
+    get holdQuaternion() {
+      return hold ? hold.targetQ.clone() : new THREE.Quaternion();
+    },
+    setHoldQuaternion(q) {
+      if (hold) hold.targetQ.copy(q);
     },
     release,
     get holding() {

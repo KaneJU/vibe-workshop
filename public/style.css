@@ -214,3 +214,8 @@ body:not(.physics-on) .phys-only { display: none !important; }
   border-radius: 12px; padding: 6px 10px; transition: opacity 0.8s;
 }
 .hold-hint.fade { opacity: 0; }
+
+/* 縮圖：伺服器拍的斜角照，放在卡片左邊 */
+.part.has-thumb, .wmod.has-thumb, .job.has-thumb { display: grid; grid-template-columns: 52px 1fr; column-gap: 9px; align-items: start; }
+.has-thumb > :not(.thumb) { grid-column: 2; }
+.has-thumb > .thumb { grid-column: 1; grid-row: 1 / span 4; width: 52px; height: 52px; border-radius: 8px; object-fit: cover; background: #0b1422; border: 1px solid var(--line); }

@@ -1,0 +1,5 @@
+{
+  "name": "八方能量環",
+  "description": "八個藍光能量方塊環繞在你周圍，正面隨時朝向你。",
+  "placement": "around_player"
+}

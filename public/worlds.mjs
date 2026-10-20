@@ -169,6 +169,19 @@ export function createWorldManager({ THREE, root, env, objects, supportBelow, pl
       badge.textContent = TYPE_LABEL[m.type] || m.type;
       badge.classList.add(m.type);
       card.querySelector('.desc').textContent = m.description || '';
+      if (m.thumb) {
+        const img = document.createElement('img');
+        img.className = 'thumb';
+        img.loading = 'lazy';
+        img.alt = '';
+        img.src = `/thumbs/${m.id}.jpg`;
+        img.onerror = () => {
+          img.remove();
+          card.classList.remove('has-thumb');
+        };
+        card.prepend(img);
+        card.classList.add('has-thumb');
+      }
       const toggle = card.querySelector('.toggle');
       toggle.textContent = on ? '使用中 · 停用' : '啟用';
       toggle.classList.toggle('primary', !on);

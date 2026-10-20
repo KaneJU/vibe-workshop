@@ -1,0 +1,7 @@
+{
+  "name": "鋼鐵手套",
+  "description": "可戴在右手的紅金鋼鐵手套，按動作鍵切換握拳與張掌，掌心反應爐隨握拳綻放強光。",
+  "placement": "front",
+  "controls": "wear",
+  "wearSlot": "right_hand"
+}

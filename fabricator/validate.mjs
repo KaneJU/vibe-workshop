@@ -66,6 +66,24 @@ if (isMainThread) {
   parentPort.postMessage(await runChecks(workerData.dir));
 }
 
+// 還沒做完就交：TODO／placeholder 註解、空的 onControl／onDevice／update
+function checkUnfinished(src, warnings) {
+  const comments = (src.match(/\/\*[\s\S]*?\*\/|\/\/.*$/gm) || []).join('\n');
+  if (/\b(TODO|FIXME|TBD|XXX)\b|placeholder|stub|待補|稍後(再)?(實作|補)|之後再做/i.test(comments)) {
+    warnings.push('註解裡還有 TODO／placeholder：把它做完再交');
+  }
+  const empty = src.match(/\b(onControl|onDevice|update)\s*=\s*(?:function\s*)?\([^)]*\)\s*(?:=>)?\s*\{\s*\}/);
+  if (empty) warnings.push(`${empty[1]} 是空的：要嘛真的做點事，要嘛不要寫`);
+}
+
+function unknownApiErrors(seen, available) {
+  return [...seen].map((name) => {
+    const parent = name.slice(0, name.lastIndexOf('.'));
+    const keys = available[parent];
+    return `${name} 不存在${keys ? `（${parent} 只有：${keys.join('、')}）` : ''}`;
+  });
+}
+
 async function runChecks(dir) {
   const errors = [];
   const warnings = [];
@@ -167,6 +185,7 @@ async function runChecks(dir) {
     [/\b(TextureLoader|GLTFLoader|FileLoader|ImageLoader|CanvasTexture|FontLoader)\b/, '不可以載入外部檔案或用 canvas 貼圖，只能用程序化幾何與材質'],
   ];
   for (const [re, msg] of banned) if (re.test(code)) errors.push(msg);
+  checkUnfinished(src, warnings);
   if (!/export\s+default\b/.test(code)) errors.push('part.js 需要 export default function build(ctx) { ... }');
   if (/export\s+default\s+async/.test(code)) errors.push('build() 不能是 async，必須同步回傳 Object3D');
   if (errors.length) return done();
@@ -175,7 +194,7 @@ async function runChecks(dir) {
   const THREE = await import('three');
   const { createRuntime } = await import(pathToFileURL(context.paths.runtime).href);
   const player = { position: new THREE.Vector3(...(context.player?.position ?? [0, 1.6, 3])) };
-  const rt = createRuntime({ THREE, player });
+  const rt = createRuntime({ THREE, player, strict: true });
 
   let library = { parts: [] };
   try {
@@ -241,6 +260,11 @@ async function runChecks(dir) {
   const hook = built.object.userData?.onControl;
   if (hook !== undefined && typeof hook !== 'function') errors.push('userData.onControl 必須是函式');
   if (typeof hook === 'function') {
+    const rootPos = built.object.position.clone();
+    const wheels = [];
+    built.object.traverse((o) => {
+      if (o !== built.object && /^wheel|輪/i.test(o.name || '')) wheels.push({ o, q: o.quaternion.clone() });
+    });
     for (let f = 0; f < 60; f += 1) {
       const st = {
         mode: meta?.controls || 'drive',
@@ -260,9 +284,20 @@ async function runChecks(dir) {
       }
     }
     if (!meta?.controls) warnings.push('有 onControl 但 meta.json 沒寫 controls，使用者按「操作」時要自己選模式');
+    if (built.object.position.distanceTo(rootPos) > 1e-6) {
+      warnings.push('onControl 搬動了整個零件：引擎會自己移動它，onControl 只動輪子、燈光這些細節');
+    }
+    const turning = (meta?.controls === 'drive' || meta?.controls === 'fly') && wheels.length;
+    if (turning && !wheels.some((w) => Math.abs(w.o.quaternion.dot(w.q)) < 0.9999)) {
+      warnings.push(`開車時輪子沒有轉：在 onControl 裡依 s.speed 轉 ${wheels.slice(0, 4).map((w) => w.o.name).join('、')}`);
+    }
   } else if (meta?.controls && meta.controls !== 'wear') {
     warnings.push('controls 是 drive／fly 但沒有 userData.onControl，輪子不會轉、也沒有燈光細節');
   }
+
+  // ---- 編出來的 API：讀了不存在的 ctx／THREE 成員 ----
+  errors.push(...unknownApiErrors(built.unknownApi, { ctx: ['THREE', 'spawn', 'player', 'random', 'library'], 'ctx.player': ['position'] }));
+  for (const name of built.unknownThree) warnings.push(`${name} 不存在（three.js r186 沒有這個）`);
 
   // ---- 統計 ----
   const root = built.object;
@@ -321,7 +356,7 @@ async function runChecks(dir) {
   }
   if (physMod && !errors.length) {
     try {
-      await checkPhysics({ THREE, root, meta, library, physMod, built, errors, warnings, report });
+      await checkPhysics({ THREE, root, meta, library, physMod, built, errors, warnings, report, rt, candId });
     } catch (e) {
       warnings.push(`物理試放沒跑成（${e.message}），零件本身沒問題`);
     }
@@ -365,7 +400,7 @@ function checkPhysicsMeta(meta, physMod, errors, warnings) {
 // ---------------- 物理試放 ----------------
 // 用跟瀏覽器同一套碰撞形狀（public/physics.mjs 的 collectPieces），放在地上跑 3 秒：
 // 會不會倒、會不會穿過地板、裝置的形狀合不合理、onDevice 鉤子會不會出錯。
-async function checkPhysics({ THREE, root, meta, library, physMod, built, errors, warnings, report }) {
+async function checkPhysics({ THREE, root, meta, library, physMod, built, errors, warnings, report, rt, candId }) {
   const { collectPieces, hullDesc, normalizeDevice, normalizePhysics, DEVICE_KINDS, PHYS } = physMod;
   const libDevice = new Map((library.parts || []).map((p) => [p.id, normalizeDevice(p.device)]));
   const myDevice = normalizeDevice(meta?.device);
@@ -452,9 +487,135 @@ async function checkPhysics({ THREE, root, meta, library, physMod, built, errors
     } else if (['fan', 'rocket', 'spring'].includes(myDevice.kind)) {
       warnings.push(`${DEVICE_KINDS[myDevice.kind].label}沒有 userData.onDevice：開關時看不出來（例如風扇葉片轉、火箭噴火）`);
     }
+    await probeDevice({ THREE, R, physMod, rt, candId, meta, myDevice, warnings, report });
   } else if (built.object.userData?.onDevice) {
     warnings.push('有 onDevice 但 meta.json 沒寫 device，鉤子不會被呼叫');
   }
+}
+
+// ---------------- 裝置實測 ----------------
+// 用工坊真正的物理引擎（public/physics.mjs）把裝置開一開：風扇／火箭有沒有往宣告的方向推、氣球會不會浮、
+// 彈簧會不會彈、四個輪子裝上木板開不開得動、操縱桿裝上車會不會翻。只出提醒，不擋交件。
+async function probeDevice({ THREE, R, physMod, rt, candId, meta, myDevice, warnings, report }) {
+  const { createPhysics, DEVICE_KINDS } = physMod;
+  const label = DEVICE_KINDS[myDevice.kind].label;
+  const parts = new Map([
+    [candId, { id: candId, name: meta?.name || 'candidate', device: meta?.device, physics: meta?.physics }],
+    ['__plank__', { id: '__plank__', name: 'probe plank' }],
+    ['__wheel__', { id: '__wheel__', name: 'probe wheel', device: { kind: 'wheel' }, physics: { mass: 6, friction: 1.2 } }],
+  ]);
+  const instances = new Map();
+  const mat = new THREE.MeshStandardMaterial();
+  // 物理引擎靠 userData.partId 認出零件（和它的裝置），測試用的木板、輪子也要掛上
+  const box = (w, h, d) => {
+    const g = new THREE.Group();
+    g.userData.partId = '__plank__';
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.y = h / 2;
+    g.add(m);
+    return g;
+  };
+  const probeWheel = () => {
+    const g = new THREE.Group();
+    g.userData.partId = '__wheel__';
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.2, 20), mat);
+    m.rotation.z = Math.PI / 2;
+    m.position.y = 0.3;
+    g.add(m);
+    return g;
+  };
+  let n = 0;
+  const add = (partId, object, pos, glue = null) => {
+    object.position.set(...pos);
+    object.updateMatrixWorld(true);
+    const restBox = new THREE.Box3().setFromObject(object).applyMatrix4(object.matrixWorld.clone().invert());
+    const inst = { id: `probe${(n += 1)}`, partId, object, restBox, glue };
+    instances.set(inst.id, inst);
+    return inst;
+  };
+  const phys = createPhysics({
+    THREE,
+    loadRapier: async () => R,
+    instances: () => instances,
+    partOf: (id) => parts.get(id),
+    boxOf: (i) => {
+      i.object.updateMatrixWorld(true);
+      return i.restBox.clone().applyMatrix4(i.object.matrixWorld);
+    },
+    nameOf: () => label,
+    controlled: () => null,
+    fxRoot: null,
+    camera: null,
+    respawnAt: () => new THREE.Vector3(0, 1, 0),
+    onSettled: () => {},
+    onMoving: () => {},
+    toast: () => {},
+    now: () => performance.now(),
+  });
+  const r2 = (v) => Math.round(v * 100) / 100;
+  const run = (sec, each) => {
+    for (let i = 0; i < Math.round(sec * 60); i += 1) {
+      each?.();
+      phys.update(1 / 60);
+    }
+  };
+  const candidate = () => rt.instantiate(candId).object;
+  await phys.setEnabled(true, { wake: true });
+  const kind = myDevice.kind;
+  if (kind === 'fan' || kind === 'rocket') {
+    const inst = add(candId, candidate(), [0, 0, 0]);
+    run(0.5);
+    const p0 = inst.object.position.clone();
+    phys.activate(inst);
+    run(2);
+    const d = inst.object.position.clone().sub(p0);
+    const dir = new THREE.Vector3(...(myDevice.direction || DEVICE_KINDS[kind].dir)).normalize();
+    report.probe = { kind, moved: r2(d.length()), along: r2(d.dot(dir)) };
+    if (d.length() < 0.3) warnings.push(`${label}啟動 2 秒只動了 ${r2(d.length())} m：force 太小，或碰撞形狀卡在地上`);
+    else if (d.dot(dir) < 0.5 * d.length()) {
+      const u = d.clone().normalize();
+      warnings.push(`${label}推的方向不對：宣告往 [${dir.toArray().map(r2)}]，實際往 [${u.toArray().map(r2)}]（風扇葉片、噴口要朝 −Z，或改 device.direction）`);
+    }
+  } else if (kind === 'balloon') {
+    const inst = add(candId, candidate(), [0, 0, 0]);
+    run(3);
+    const y = inst.object.position.y;
+    report.probe = { kind, rose: r2(y) };
+    if (y < 1) warnings.push(`氣球放開 3 秒只升到 ${r2(y)} m：太重或浮力太小`);
+  } else if (kind === 'spring') {
+    const inst = add(candId, candidate(), [0, 0, 0]);
+    run(0.5);
+    phys.activate(inst);
+    let top = 0;
+    run(1.2, () => (top = Math.max(top, inst.object.position.y)));
+    report.probe = { kind, jumped: r2(top) };
+    if (top < 0.3) warnings.push(`彈簧按下去只彈起 ${r2(top)} m`);
+  } else if (kind === 'wheel' || kind === 'steer') {
+    // 木板＋四個輪子（輪子用候選或測試輪）＋（操縱桿時放在木板上），黏成一台車開一開
+    const wheel = kind === 'wheel' ? candidate : probeWheel;
+    const sample = wheel();
+    const wb = new THREE.Box3().setFromObject(sample);
+    const ws = wb.getSize(new THREE.Vector3());
+    const r = Math.max(ws.y, ws.z) / 2;
+    const plankY = Math.max(0.05, r - 0.04);
+    const plank = add('__plank__', box(1.2, 0.08, 1.0), [0, plankY, 0], 'g_probe');
+    for (const [x, z] of [[-1, 1], [1, 1], [-1, -1], [1, -1]]) {
+      add(kind === 'wheel' ? candId : '__wheel__', wheel(), [x * (0.6 + ws.x / 2 + 0.03), 0, z * 0.32], 'g_probe');
+    }
+    if (kind === 'steer') add(candId, candidate(), [0, plankY + 0.08, -0.2], 'g_probe');
+    run(0.8);
+    const p0 = plank.object.position.clone();
+    run(2, () => phys.pilot(plank, { x: 0, y: 1 }, 1 / 60));
+    const drove = plank.object.position.clone().sub(p0);
+    run(1.5, () => phys.pilot(plank, { x: 1, y: 0.6 }, 1 / 60));
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(plank.object.quaternion).y;
+    report.probe = { kind, drove: r2(drove.length()), forward: r2(drove.z), upright: r2(up) };
+    if (kind === 'wheel' && drove.z < 0.5) {
+      warnings.push(`四個這種輪子裝上木板，往前開 2 秒只走了 ${r2(drove.z)} m：輪子要是圓的、軸沿 X、原點在輪胎底部`);
+    }
+    if (up < 0.8) warnings.push(`裝上這個${label}的車翻了（傾斜 ${Math.round((Math.acos(Math.max(-1, Math.min(1, up))) * 180) / Math.PI)}°）：太重或太高`);
+  }
+  await phys.setEnabled(false);
 }
 
 // ---------------- 世界模組（環境／規則）驗收 ----------------
@@ -477,6 +638,7 @@ async function checkWorld(dir, context, meta, errors, warnings, report, done) {
     [/\b(TextureLoader|GLTFLoader|FileLoader|ImageLoader|CanvasTexture|FontLoader)\b/, '不可以載入外部檔案或用 canvas 貼圖'],
   ];
   for (const [re, msg] of banned) if (re.test(code)) errors.push(msg);
+  checkUnfinished(src, warnings);
   if (!/export\s+default\b/.test(code)) errors.push('world.js 需要 export default function install(world) { ... }');
   if (meta?.replaces) {
     const activeIds = [context.world?.environment?.id, ...(context.world?.rules || []).map((r) => r.id)].filter(Boolean);
@@ -566,6 +728,7 @@ async function checkWorld(dir, context, meta, errors, warnings, report, done) {
     toast: () => {},
     onError: (_rec, e, why) => runtimeErrors.push(`${why === 'slow' ? '太耗效能' : '執行時出錯'}：${e?.message || e}`),
     now: () => performance.now(),
+    strictApi: true,
   });
   const rec = { id: '__candidate__', type: meta?.type, name: meta?.name || '新模組' };
   let mod;
@@ -608,6 +771,18 @@ async function checkWorld(dir, context, meta, errors, warnings, report, done) {
     }
   }
   errors.push(...runtimeErrors);
+  if (entry?.unknownApi.size) {
+    const api = entry.api;
+    errors.push(
+      ...unknownApiErrors(entry.unknownApi, {
+        world: Object.keys(api),
+        'world.env': Object.keys(api.env),
+        'world.player': Object.keys(api.player),
+        'world.vehicle': Object.keys(api.vehicle),
+        'world.physics': ['enabled', ...Object.keys(api.physics).filter((k) => k !== 'enabled')],
+      }),
+    );
+  }
 
   let meshes = 0;
   let triangles = 0;

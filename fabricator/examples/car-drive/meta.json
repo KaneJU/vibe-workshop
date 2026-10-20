@@ -1,0 +1,6 @@
+{
+  "name": "氮氣卡丁車",
+  "description": "可駕駛的紅色小卡丁車，輪胎隨車速旋轉、前輪轉向，倒車亮起紅燈並可按動作鍵噴出藍色氮氣火焰。",
+  "placement": "front",
+  "controls": "drive"
+}

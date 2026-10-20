@@ -18,13 +18,17 @@
     "test:mobile": "node tests/mobile.mjs",
     "test:control": "node tests/control.mjs",
     "test:world": "node tests/world.mjs",
-    "test:physics": "node tests/physics.mjs"
+    "test:physics": "node tests/physics.mjs",
+    "test:examples": "node tests/examples.mjs",
+    "test:xr": "node tests/xr.mjs",
+    "bench": "node tests/bench.mjs"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.21.0",
     "three": "^0.186.1"
   },
   "devDependencies": {
+    "iwer": "^2.6.0",
     "playwright": "^1.55.1"
   }
 }

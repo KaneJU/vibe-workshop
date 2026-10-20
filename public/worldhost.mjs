@@ -3,7 +3,7 @@
 // 宿主負責：給模組一組受控的 API、記下它放進場景的每樣東西、出錯或太耗效能就自動拔掉並清乾淨，
 // 所以模組寫壞只會壞它自己，世界其他部分照常運作。
 
-import { mulberry32, hashString } from './runtime.mjs';
+import { mulberry32, hashString, watchMembers } from './runtime.mjs';
 
 export const WORLD_LIMITS = { maxFrameMs: 8, warmupFrames: 90, toastGapMs: 2000 };
 export const ENV_METHODS = ['background', 'fog', 'ground', 'grid', 'pad', 'hemi', 'sun', 'exposure', 'reflections'];
@@ -25,7 +25,7 @@ function disposeTree(obj) {
   });
 }
 
-export function createWorldHost({ THREE, root, env, objects, supportBelow, player, vehicle, physics, hud, toast, onError, now }) {
+export function createWorldHost({ THREE, root, env, objects, supportBelow, player, vehicle, physics, hud, toast, onError, now, strictApi = false }) {
   const active = new Map(); // id -> entry
 
   // 拔掉出錯的模組，再通知外層（外層決定要不要退回上一版）
@@ -60,7 +60,7 @@ export function createWorldHost({ THREE, root, env, objects, supportBelow, playe
       };
     }
     let lastToast = -Infinity;
-    return {
+    const api = {
       THREE,
       add(o) {
         if (o && o.isObject3D) {
@@ -95,13 +95,18 @@ export function createWorldHost({ THREE, root, env, objects, supportBelow, playe
       },
       random: mulberry32(hashString(rec.id)),
     };
+    if (!strictApi) return api;
+    // 驗收用：讀到不存在的成員（world.env.sky、world.physics.setGravity…）都記下來
+    const seen = entry.unknownApi;
+    for (const k of ['env', 'player', 'vehicle', 'physics']) api[k] = watchMembers(api[k], `world.${k}`, seen);
+    return watchMembers(api, 'world', seen);
   }
 
   function install(rec, mod) {
     if (active.has(rec.id)) uninstall(rec.id);
     const fn = typeof mod === 'function' ? mod : mod?.default;
     if (typeof fn !== 'function') return { ok: false, error: 'world.js 必須 export default function install(world)' };
-    const entry = { rec, added: new Set(), ret: {}, ms: 0, frames: 0, startedAt: null, envRefused: 0 };
+    const entry = { rec, added: new Set(), ret: {}, ms: 0, frames: 0, startedAt: null, envRefused: 0, unknownApi: new Set() };
     active.set(rec.id, entry);
     entry.api = makeApi(entry);
     try {

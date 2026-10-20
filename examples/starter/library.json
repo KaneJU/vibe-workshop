@@ -20,7 +20,8 @@
       },
       "basedOn": null,
       "createdAt": "2026-10-19T11:20:14.359Z",
-      "placement": "front"
+      "placement": "front",
+      "thumb": true
     },
     {
       "id": "p_mvf5y313807126",
@@ -42,7 +43,8 @@
       },
       "basedOn": null,
       "createdAt": "2026-10-19T11:20:43.480Z",
-      "placement": "around_player"
+      "placement": "around_player",
+      "thumb": true
     },
     {
       "id": "c_mvf61nt4b1daa6",
@@ -94,7 +96,8 @@
           ]
         }
       ],
-      "createdAt": "2026-10-19T11:23:30.376Z"
+      "createdAt": "2026-10-19T11:23:30.376Z",
+      "thumb": true
     },
     {
       "id": "p_mvf636ce28ed26",
@@ -116,7 +119,8 @@
         "spawns": 1
       },
       "basedOn": null,
-      "createdAt": "2026-10-19T11:24:41.055Z"
+      "createdAt": "2026-10-19T11:24:41.055Z",
+      "thumb": true
     },
     {
       "id": "p_mvf68m599575d1",
@@ -138,7 +142,8 @@
         "spawns": 1
       },
       "basedOn": null,
-      "createdAt": "2026-10-19T11:28:54.813Z"
+      "createdAt": "2026-10-19T11:28:54.813Z",
+      "thumb": true
     },
     {
       "id": "p_mvfah2sjefdb80",
@@ -162,7 +167,8 @@
         "spawns": 1
       },
       "basedOn": null,
-      "createdAt": "2026-10-19T13:27:28.099Z"
+      "createdAt": "2026-10-19T13:27:28.099Z",
+      "thumb": true
     },
     {
       "id": "p_mvfagvke215a5c",
@@ -186,7 +192,8 @@
         "spawns": 1
       },
       "basedOn": null,
-      "createdAt": "2026-10-19T13:27:18.734Z"
+      "createdAt": "2026-10-19T13:27:18.734Z",
+      "thumb": true
     },
     {
       "id": "p_mvfvs0x59da7fa",
@@ -224,7 +231,8 @@
         "spawns": 1
       },
       "basedOn": null,
-      "createdAt": "2026-10-19T23:23:50.825Z"
+      "createdAt": "2026-10-19T23:23:50.825Z",
+      "thumb": true
     },
     {
       "id": "p_mvfvs675cde110",
@@ -262,7 +270,8 @@
         "spawns": 1
       },
       "basedOn": null,
-      "createdAt": "2026-10-19T23:23:57.665Z"
+      "createdAt": "2026-10-19T23:23:57.665Z",
+      "thumb": true
     },
     {
       "id": "p_mvfvso0b1bd4e6",
@@ -295,7 +304,8 @@
         "spawns": 1
       },
       "basedOn": null,
-      "createdAt": "2026-10-19T23:24:20.747Z"
+      "createdAt": "2026-10-19T23:24:20.747Z",
+      "thumb": true
     },
     {
       "id": "p_mvfvsvqx27ac2d",
@@ -329,7 +339,8 @@
         "spawns": 1
       },
       "basedOn": null,
-      "createdAt": "2026-10-19T23:24:30.777Z"
+      "createdAt": "2026-10-19T23:24:30.777Z",
+      "thumb": true
     },
     {
       "id": "p_mvfvu6qu695fe4",
@@ -367,7 +378,8 @@
         "spawns": 1
       },
       "basedOn": null,
-      "createdAt": "2026-10-19T23:25:31.686Z"
+      "createdAt": "2026-10-19T23:25:31.686Z",
+      "thumb": true
     },
     {
       "id": "p_mvfvtn2i4926fc",
@@ -399,7 +411,8 @@
         "spawns": 1
       },
       "basedOn": null,
-      "createdAt": "2026-10-19T23:25:06.186Z"
+      "createdAt": "2026-10-19T23:25:06.186Z",
+      "thumb": true
     },
     {
       "id": "p_mvfvu5sya31395",
@@ -429,7 +442,8 @@
         "spawns": 1
       },
       "basedOn": null,
-      "createdAt": "2026-10-19T23:25:30.466Z"
+      "createdAt": "2026-10-19T23:25:30.466Z",
+      "thumb": true
     },
     {
       "id": "c_mvfwneiy081798",
@@ -557,7 +571,8 @@
           ]
         }
       ],
-      "createdAt": "2026-10-19T23:48:14.794Z"
+      "createdAt": "2026-10-19T23:48:14.794Z",
+      "thumb": true
     }
   ]
 }

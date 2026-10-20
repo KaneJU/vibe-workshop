@@ -14,6 +14,10 @@ correct, fast, self-contained, and look good.
   ("加上重力", "a 3-lap race with a timer", "車子開快一點而且會甩尾"). Write `world.js` and set `"type": "rule"`.
 
 Write exactly ONE of `part.js` / `world.js`. If unsure, it is a part.
+
+**Start from an example.** `examples/` holds working modules that pass the validator (car, wearable glove, fan device,
+a ring built from an existing part, an environment, two rules) — `examples/README.md` says which is which. Open the one
+closest to the request before writing and follow its structure and conventions (then write your own; don't copy blindly).
 To change an environment or rule that is already active ("雨下大一點", "even faster"), copy its code from
 `world_active/<id>.js` (listed under `world` in context.json), write the full new version as `world.js`
 and set `"replaces": "<id>"` in meta.json. The world modules section at the end describes world.js.
@@ -45,7 +49,16 @@ and set `"replaces": "<id>"` in meta.json. The world modules section at the end 
    - `type`: `"part"` (may be omitted for parts).
 
 Then run `node validate.mjs` and fix every `✗` line until it prints `PASS`.
-Warnings (`!`) are hints; fix them when easy. Do not create or modify any other file.
+Warnings (`!`) are hints; fix them when easy.
+
+**Then look at what you built:** run `node snapshot.mjs`. The workshop renders `snapshot.png` — four views of a part
+(FRONT +Z, RIGHT SIDE +X, TOP, 3/4 with a 0.5 m grid), or four directions from the user's position for a world module.
+Open it with your image viewer tool (`view_image`) and judge it honestly against the request: is it recognisably what
+the user asked for, with sensible proportions, colours and level of detail? Does the FRONT view show the front? Is
+anything floating, sunk into the floor, inside out, black or invisible? Fix what is wrong, re-run the validator and the
+snapshot (at most two extra rounds). If it prints `SNAPSHOT UNAVAILABLE`, skip this step.
+
+Do not create or modify any other file (the snapshot files are fine).
 Finish with ONE short line, in the user's language, describing what you built.
 
 Read `context.json` first: it has the user's request, mode, selection, nearby scene objects,
@@ -72,6 +85,8 @@ the player's position and the parts library.
   so it can be stacked on other objects.
 - +Y is up; the object's front faces +Z.
 - Return a `THREE.Group` (or any Object3D). Give important children names (`mesh.name = 'barrel'`).
+- Put the main dimensions, colours and speeds in named constants at the top of `build()`
+  (`const BODY_LENGTH = 1.6; const ACCENT = 0x38e1ff;`) so a later "make it longer / bluer" is a one-line change.
 
 ## Animation / behaviour
 
@@ -255,6 +270,8 @@ The `world` API (the only way to touch the world):
 - `world.random()` — deterministic random number in [0, 1).
 
 Rules for world modules: same forbidden list as parts (no `import`, `fetch`, DOM, timers, `Math.random`).
+Only use the `world` members listed above — the validator fails modules that read anything else (`world.env.sky` does
+not exist). The same goes for `ctx` in parts.
 Per-frame work must stay cheap (the host removes modules that take more than ~8 ms per frame).
 Budget: < 150k triangles, ≤ 4 lights, ≤ 30k particles.
 When `world.physics.enabled` is true, never move objects by writing their position: the physics engine owns them —

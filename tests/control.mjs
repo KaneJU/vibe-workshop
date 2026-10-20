@@ -193,6 +193,13 @@ const q1 = await ws(() => window.__ws.engine.session.obj.quaternion.toArray());
 check('⟲ 轉一下手上的東西', q0.some((v, i) => Math.abs(v - q1[i]) > 0.01));
 await page.tap('#ctlExit');
 await page.waitForTimeout(400);
+// 物理開著時手套是「掉」回地上的：等它停穩再量（軟體算圖每秒只有幾格，掉落比真機慢）
+await page
+  .waitForFunction((id) => {
+    const w = window.__ws;
+    return !w.physics?.ready || w.physics.bodyOf(w.instances.get(id))?.sleeping;
+  }, gloveId, { timeout: 8000 })
+  .catch(() => {});
 const back = await ws((id) => {
   const o = window.__ws.instances.get(id).object;
   return { inWorld: o.parent?.name === 'world', scale: o.scale.x, bottom: window.__ws.worldBox(window.__ws.instances.get(id)).min.y };

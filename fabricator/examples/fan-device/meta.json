@@ -1,0 +1,19 @@
+{
+  "name": "風扇",
+  "description": "可黏合在物件上的左納烏風扇，啟動時葉片旋轉、青綠紋路發光，向後送風推動整台裝置前進。",
+  "placement": "front",
+  "physics": {
+    "mass": 3,
+    "friction": 0.8,
+    "bounce": 0.05
+  },
+  "device": {
+    "kind": "fan",
+    "force": 250,
+    "direction": [
+      0,
+      0,
+      1
+    ]
+  }
+}

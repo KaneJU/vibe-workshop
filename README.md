@@ -17,6 +17,7 @@ No page reloads, no rebuilds — you never leave the world.
 - **Modify in place** — select an AI-made object and say *"make it red"*; the new version replaces it where it stands.
 - **Change the world itself** — say *"turn this into the surface of the moon"* or *"add gravity"*: Codex writes an environment or a rule and swaps it into the running world. Even the driving engine can be retuned by a rule (*"make the car faster and let it drift"*).
 - **Real physics, borrowed from Zelda: Tears of the Kingdom** — things fall, tumble and get knocked over. Grab them with Ultrahand, throw them, glue them into contraptions, add fans, wheels, balloons and rockets, drive what you built, and send things back with Recall.
+- **The AI checks its own work** — before handing a part over, Codex looks at four rendered views of it, the validator flags made-up APIs, and devices get a real test drive in the physics engine. Every toolbox part gets a thumbnail.
 - **Drive, fly and wear what you build** — select an object and press ▶ 操作 [operate]: cars drive, flying cars fly, gloves go on your hand. Phones get a thumb joystick and an ⚡ action button; computers use WASD and Space.
 - **Everything persists** — the scene and the toolbox are saved automatically; close the tab and come back later.
 - **Desktop, phone and VR** — mouse and keyboard, a touch-friendly phone layout, and an experimental WebXR mode (grab and stack with controllers).
@@ -27,14 +28,18 @@ No page reloads, no rebuilds — you never leave the world.
 
 Codex does not generate meshes or images. It **writes 60–80 lines of JavaScript** that assemble the object from primitives — boxes, cylinders, spheres, tori, lathe and extrude shapes — measured in meters, with PBR / emissive materials and optional animation.
 
-Every request becomes a small job folder with four ingredients:
+Every request becomes a small job folder with six ingredients:
 
 | | Ingredient | What it does |
 |---|---|---|
-| 1 | Task prompt (`taskPrompt()` in [`server.mjs`](server.mjs)) | Four lines: what the user said, create or modify, and "write `part.js` + `meta.json`, run the validator until it prints PASS". |
-| 2 | [`fabricator/AGENTS.md`](fabricator/AGENTS.md) | The spec: meters, origin at the bottom center, front faces +Z, the `ctx` API, animation hooks, budgets, forbidden APIs, placement rules. |
-| 3 | `context.json` | The user's words, the current selection, nearby objects, the player's position, and every toolbox part with its size. |
-| 4 | [`fabricator/validate.mjs`](fabricator/validate.mjs) | Really builds the part in Node, runs 90 animation frames, checks size, grounding, triangle and light budgets and forbidden APIs, with a 10-second watchdog. Codex runs it and fixes its code until PASS; the server validates again before accepting the part. |
+| 1 | Task prompt (`taskPrompt()` in [`server.mjs`](server.mjs)) | A few lines: what the user said, create or modify, "open the closest example, write `part.js` + `meta.json`, run the validator until PASS, then look at the snapshot". |
+| 2 | [`fabricator/AGENTS.md`](fabricator/AGENTS.md) | The spec: meters, origin at the bottom center, front faces +Z, the `ctx` API, animation hooks, physics and devices, budgets, forbidden APIs, placement rules. |
+| 3 | [`fabricator/examples/`](fabricator/examples) | Seven working modules (a car, a glove, a fan device, a ring built from an existing part, an environment, two rules). Codex opens the closest one first. A test keeps them passing. |
+| 4 | `context.json` | The user's words, the selection and nearby objects — with what each one *is* (description, drivable, device, animated, glued) — the player's position, and every toolbox part with its size. |
+| 5 | [`fabricator/validate.mjs`](fabricator/validate.mjs) | Really builds the part in Node and runs 90 animation frames; checks size, grounding, budgets and forbidden APIs; fails on made-up `ctx` / `world` members; warns about leftover TODOs and empty hooks; drops the part on a floor; and test-drives devices in the real physics engine (does the fan push, the balloon rise, a cart on four of these wheels drive?). 10-second watchdog. |
+| 6 | [`fabricator/snapshot.mjs`](fabricator/snapshot.mjs) | "Look at your work": the server renders four views (front, side, top, 3/4) into `snapshot.png` and Codex opens it with its image viewer to check the result against the request. Codex's sandbox can't run a browser, so the job folder and the server pass notes. |
+
+Codex loops until PASS; the server validates again, and if that fails it gives the errors to a fresh Codex for one more try. If OpenAI is busy (429, model at capacity), the job waits and starts again by itself — that doesn't count as a try — and new jobs hold back for a moment; if your Codex quota has run out, it says so instead of retrying.
 
 Composition is just code. A ring of eight energy cubes is essentially:
 
@@ -126,6 +131,19 @@ Rules can use physics too: *"moon gravity"* becomes `world.physics.gravity(-1.6)
 
 <img src="docs/screenshot-ultrahand.jpg" width="220" alt="Ultrahand: holding a fan against the cart, the glue button lights up"> <img src="docs/screenshot-pilot.jpg" width="220" alt="Driving the Zonai cart"> <img src="docs/screenshot-balloon.jpg" width="220" alt="Two balloons lifting a plank">
 
+## Standing on others' shoulders
+
+We are not the first to "speak a world into existence". Ideas borrowed (and credited):
+
+| From | What we took |
+|---|---|
+| [Microsoft LLMR](https://github.com/microsoft/LLMR) (CHI 2024) — speak objects and behaviors into a running Unity scene | Tell the model what each object *does*, not just where it is; one retry with the errors; measure with a fixed prompt set (`npm run bench`) instead of by feel |
+| [Google XR Blocks / Vibe Coding XR](https://github.com/google/xrblocks) (2026) — Gemini builds WebXR apps from a sentence | Working examples next to the spec; catch made-up APIs; test interactions, not just "it loads" |
+| [Meta Immersive Web SDK](https://github.com/facebook/immersive-web-sdk) and [IWER](https://github.com/meta-quest/immersive-web-emulation-runtime) | Test the VR mode on an emulated Quest 3 (`npm run test:xr`) — it found a real bug: grabbing with physics on made objects jump 2.4 m; VR grabs now go through Ultrahand, like their grab-through-physics design |
+| [LLMER](https://arxiv.org/abs/2502.02441) | Not adopted yet: let the model fill structured settings instead of code for simple rules |
+
+What is different here: the world keeps everything you make (stack it, save it as a part, build new things out of it), it plays like Tears of the Kingdom, and it targets an ordinary iPhone with your own AI subscription.
+
 ## Operate things: drive, fly, wear
 
 Select an object and press **▶ 操作** [operate], or say *drive*, *fly*, *wear* (「開車」「起飛」「戴上」).
@@ -197,6 +215,9 @@ npm run test:mobile      # iPhone emulation over the LAN: access key, drawers, t
 npm run test:control     # iPhone: drive, switch to fly, wear, chooser, snap; plus WASD on a desktop
 npm run test:world       # iPhone: moon, gravity, drift, error isolation, rollback, slow-module watchdog, safe mode
 npm run test:physics     # iPhone: fall and stack, Ultrahand, glue, shake off, fan, balloon, cart with a steering stick, Recall, gravity rule, reload
+npm run test:xr          # VR on an emulated Quest 3 (IWER): controller grab, follow, wrist turn, release, hand pinch — physics on and off
+npm run test:examples    # every example in fabricator/examples passes the real validator (no server needed)
+WITH_CODEX=1 npm run bench   # the fixed prompt set: success, time, validator rounds, a snapshot of every result (uses Codex quota)
 WITH_CODEX=1 npm test    # also runs a real build and modification (uses Codex quota)
 ```
 
@@ -208,6 +229,9 @@ WITH_CODEX=1 npm test    # also runs a real build and modification (uses Codex q
 server.mjs              HTTP server, persistence, Codex job runner, access key
 fabricator/AGENTS.md    the part spec given to Codex
 fabricator/validate.mjs the part validator (also run by Codex)
+fabricator/examples/    working examples Codex reads first
+fabricator/snapshot.mjs  "look at your work" (asks the server for snapshot.png)
+fabricator/snapshotter.mjs  server-side renderer for snapshots and toolbox thumbnails
 public/runtime.mjs      part assembly shared by the browser and the validator (nesting and limits)
 public/app.js           the workshop: scene, selection, drag-to-stack, toolbox, voice, WebXR
 public/control.mjs      operation engine: drive, fly, wear (joystick, buttons, keyboard)
@@ -223,9 +247,9 @@ tests/                  Playwright tests (desktop and phone)
 ## Limitations and roadmap
 
 - The in-app UI is in Traditional Chinese for now.
-- VR mode (enter VR, grab and stack with controllers) has not been tested on a real headset yet, and you can't talk to build inside VR yet.
+- VR mode is tested on an emulated Quest 3 (grab, move, turn, release, hand pinch), not yet on a real headset, and you can't talk to build inside VR yet.
 - Headsets need HTTPS for WebXR, and browsers need HTTPS for the web microphone. Over plain LAN http, use the phone keyboard's dictation instead.
-- The AI can't see what it built; it only gets the validator's numbers. The next idea is to render a screenshot and let it review its own work.
+- The AI looks at four still pictures of what it built; it doesn't watch animations or try the controls visually yet. Thumbnails and snapshots need Playwright's Chromium (`npx playwright install chromium`); without it everything else still works.
 - Collision shapes are convex hulls: a table's legs and top collide as one solid block. Things made of several sub-parts (or glued together) keep their real shape.
 - Physics runs inside each open page. Keep the workshop open on one device at a time, or two simulations will save over each other.
 - Ultrahand isn't in VR yet; VR controllers still use the simple grab-and-stack.
