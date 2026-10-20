@@ -33,7 +33,7 @@
     "test:quality": "node tests/quality.mjs",
     "test:headset": "node tests/headset-unit.mjs && node tests/headset.mjs",
     "test:flash": "node tests/flash-unit.mjs",
-    "test:creation": "node tests/creation-protocol.mjs && node tests/sandbox.mjs && node tests/creation.mjs",
+    "test:creation": "node tests/creation-protocol.mjs && node tests/sandbox.mjs && node tests/creation.mjs && node tests/creation-multitab.mjs",
     "test:connector": "node tests/connector-unit.mjs",
     "visual": "node tests/visual.mjs",
     "bench": "node tests/bench.mjs"

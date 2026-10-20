@@ -25,7 +25,7 @@ const check = (name, ok, detail = '') => {
 
 const server = spawn(process.execPath, ['server.mjs'], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: DATA, CODEX_BIN: '/nonexistent/codex' },
+  env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: DATA, CODEX_BIN: '/nonexistent/codex', CREATION_LEASE_MS: '1500', CREATION_HANDOVER_MS: '800' },
   stdio: 'ignore',
 });
 for (let i = 0; i < 80; i += 1) {
@@ -36,7 +36,7 @@ for (let i = 0; i < 80; i += 1) {
 // 一個「瀏覽器」：記住自己的 cookie
 function browser() {
   let cookie = '';
-  return async (method, url, body) => {
+  const fn = async (method, url, body) => {
     const r = await fetch(BASE + url, { method, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}) }, body: body ? JSON.stringify(body) : undefined });
     const sc = r.headers.get('set-cookie');
     if (sc) cookie = sc.split(';')[0];
@@ -49,6 +49,8 @@ function browser() {
     }
     return { status: r.status, json, text };
   };
+  fn.cookie = () => cookie;
+  return fn;
 }
 // connector：只有 token
 const conn = (token) => async (method, url, body) => {
@@ -201,6 +203,74 @@ vibe.define({ init() { return { r }; }, tick() {}, view(s) { throw new Error('�
     parent = r.id;
   }
   check('同一個機制連開 12 層子世界（超過舊的 8 層），路徑與深度正確', chain[11].depth === 12 && chain[11].path.length === 13, `depth ${chain[11].depth}`);
+
+  // 同一層多個分頁：執行權（lease）、接手、即時通知（SSE）——協定測試
+  const wid = wc.world.id;
+  const events = [];
+  const sse = async (who, client) => {
+    const ctl = new AbortController();
+    const cookieOf = who === 'A' ? A : B;
+    // 借 browser() 的 cookie：再送一次 /api/me 拿不到 cookie，所以直接用 fetch＋手動 cookie
+    const r = await fetch(`${BASE}/api/cworlds/${wid}/events?client=${client}`, { headers: { Cookie: cookieOf.cookie() }, signal: ctl.signal });
+    (async () => {
+      const dec = new TextDecoder();
+      let buf = '';
+      try {
+        for await (const chunk of r.body) {
+          buf += dec.decode(chunk);
+          let i;
+          while ((i = buf.indexOf('\n\n')) >= 0) {
+            const block = buf.slice(0, i);
+            buf = buf.slice(i + 2);
+            const ev = block.match(/^event: (\w+)$/m)?.[1];
+            const data = block.match(/^data: (.*)$/m)?.[1];
+            if (ev) events.push({ who, ev, data: data ? JSON.parse(data) : null });
+          }
+        }
+      } catch {
+        /* 中止 */
+      }
+    })();
+    return () => ctl.abort();
+  };
+  const cA = 'tab_aaaaaaaa1';
+  const cB = 'tab_bbbbbbbb1';
+  const stopA = await sse('A', cA);
+  const stopB = await sse('B', cB);
+  await sleep(200);
+  const lease = (who, client, action) => who('POST', `/api/cworlds/${wid}/lease`, { client, action });
+  const lA = (await lease(A, cA, 'claim')).json;
+  const lB = (await lease(B, cB, 'claim')).json;
+  check('lease：第一個 claim 成為執行者，第二個只看', lA.leader === true && lB.leader === false && lB.lease?.clientId === cA);
+  const curRev = (await A('GET', `/api/cworlds/${wid}`)).json.world.revision;
+  const putB = await B('PUT', `/api/cworlds/${wid}`, { baseRevision: curRev, items: [], client: cB });
+  check('只看的分頁存檔 → 409（notLeader），不覆蓋執行中的存檔', putB.status === 409 && putB.json.notLeader === true);
+  const putA = await A('PUT', `/api/cworlds/${wid}`, { baseRevision: curRev, items: cBack.items, client: cA, reason: 'save' });
+  await sleep(200);
+  check('執行者存檔成功 → 同一層的其他分頁收到 revision 通知（附存檔的人）', putA.status === 200 && events.some((e) => e.who === 'B' && e.ev === 'revision' && e.data.by === cA && e.data.revision === putA.json.revision));
+  const tk = (await lease(B, cB, 'take')).json;
+  await sleep(200);
+  check('take：有人在跑 → 先排隊，伺服器通知執行者交出（handover）', tk.pending === true && events.some((e) => e.who === 'A' && e.ev === 'handover' && e.data.to === cB));
+  await lease(A, cA, 'release');
+  await sleep(200);
+  check('執行者存好後 release → 執行權交給排隊的分頁（大家都收到 lease 通知）', events.some((e) => e.ev === 'lease' && e.data.clientId === cB && e.data.from === cA) && (await lease(A, cA, 'renew')).json.leader === false);
+  // 執行者不回應：時間到強制交接
+  const tk2 = (await lease(A, cA, 'take')).json;
+  await sleep(1200);
+  check('執行者不回應 handover：等 HANDOVER_MS 後強制交給接手的人（forced）', tk2.pending === true && events.some((e) => e.ev === 'lease' && e.data.clientId === cA && e.data.forced === true));
+  // 斷線：lease 不續就到期，別人 claim 得到
+  await sleep(1700);
+  check('執行者不續 lease（斷線）→ 到期後別人 claim 得到', (await lease(B, cB, 'claim')).json.leader === true);
+  // 追加作品：不需要執行權，伺服器合併並通知
+  const before = (await A('GET', `/api/cworlds/${wid}`)).json.world;
+  const app = await A('POST', `/api/cworlds/${wid}/items`, { item: { id: 'i_append1', lineage: L1, version: 1, pos: [4, 0, 0], state: null, schema: null }, client: cA });
+  await sleep(200);
+  const after = (await A('GET', `/api/cworlds/${wid}`)).json.world;
+  check('追加作品（不需要執行權）：伺服器合併、revision+1、通知其他分頁（reason append），原本的實例狀態不動', app.status === 200 && after.items.length === before.items.length + 1 && after.revision === before.revision + 1 && events.some((e) => e.who === 'B' && e.ev === 'revision' && e.data.reason === 'append') && after.items.find((i) => i.id === 'i_c1').state.hits === 3);
+  check('同一個實例 id 不能追加兩次', (await A('POST', `/api/cworlds/${wid}/items`, { item: { id: 'i_append1', lineage: L1, version: 1, pos: [4, 0, 0] }, client: cA })).status === 409);
+  check('presence：開著的分頁數會通知（2 個）', events.some((e) => e.ev === 'presence' && e.data.n === 2));
+  stopA();
+  stopB();
   check('沒有創作者身分不能開世界、不能送需求', (await browser()('POST', '/api/cworlds', { parentId: 'root' })).status === 401);
 } catch (e) {
   check('測試流程沒有例外', false, e.stack || e.message);

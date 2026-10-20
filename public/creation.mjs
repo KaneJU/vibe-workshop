@@ -77,7 +77,17 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   let busy = false; // 進出世界中
   const keys = { left: false, right: false, up: false, down: false, action: false };
   const tappedAt = { left: -1e9, right: -1e9, up: -1e9, down: -1e9, action: -1e9 }; // 按下的時間：快速點按也至少算按住 120 ms（沙盒忙的那一步不會吃掉）
-  const stats = { swaps: 0, rejected: 0, rollbacks: 0, enters: 0, saves: 0, conflicts: 0, placed: 0 };
+  const stats = { swaps: 0, rejected: 0, rollbacks: 0, enters: 0, saves: 0, conflicts: 0, placed: 0, resyncs: 0, merges: 0, takeovers: 0, handovers: 0, demotions: 0, reconnects: 0 };
+  // 多分頁／多瀏覽器同一層：只有「執行者」（拿到 lease 的分頁）在跑作品、存檔；其他的「只看」，跟著伺服器的存檔同步。
+  // 要動手（點、按鍵、放作品、換版）就先接手；執行者斷線，lease 到期後別人可以接手。所有變動靠伺服器的 SSE 通知。
+  const clientId = uid('tab'); // 每次開頁面一個（複製分頁不會共用）
+  let role = 'none'; // leader（執行者）｜follower（只看）
+  let es = null; // 這一層的 EventSource
+  let esWorld = null;
+  let followers = 0; // 這一層開著的分頁數（含自己）
+  let lastRenew = 0;
+  let takeWaiter = null;
+  let connState = 'ok'; // ok｜reconnecting
   const listeners = [];
   const on = (el, ev, fn, opt) => {
     el.addEventListener(ev, fn, opt);
@@ -148,8 +158,10 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   function renderCrumb() {
     const c = $('#cCrumb');
     const parts = (world?.path || []).map((p, i, a) => `<span class="crumb">${i === a.length - 1 ? '📍 ' : ''}${esc(p.name)}</span>`).join('<span>›</span>');
-    c.innerHTML = `${world?.parentId ? '<button id="cUp" class="primary">⬑ 回上一層</button>' : ''}${parts}<span class="crumb">第 ${world?.depth ?? 0} 層</span>`;
+    const roleTxt = role === 'leader' ? (followers > 1 ? `▶ 這個分頁在執行（另有 ${followers - 1} 個在看）` : '') : role === 'follower' ? '👀 只看：這一層正由另一個分頁執行——點畫面或放作品就接手' : '';
+    c.innerHTML = `${world?.parentId ? '<button id="cUp" class="primary">⬑ 回上一層</button>' : ''}${parts}<span class="crumb">第 ${world?.depth ?? 0} 層</span>${roleTxt ? `<span class="crumb" id="cRole">${esc(roleTxt)}</span>` : ''}${connState === 'reconnecting' ? '<span class="crumb">⚠️ 連線中斷，重新連線中…</span>' : ''}`;
     c.querySelector('#cUp')?.addEventListener('click', () => goUp());
+    c.querySelector('#cRole')?.addEventListener('click', () => role === 'follower' && ensureLeader());
   }
   function renderLib() {
     const box = $('#cLib');
@@ -232,10 +244,13 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   async function placeNew(lineage, version, worldId = world.id) {
     const item = { id: uid('i'), lineage, version, pos: nextSpot(), rotY: 0, state: null, schema: null };
     if (worldId !== world.id) {
-      // 不在那一層：直接加進那一層的存檔（下次進去才執行）
-      const w = (await api('GET', `/api/cworlds/${worldId}`)).world;
-      await api('PUT', `/api/cworlds/${worldId}`, { baseRevision: w.revision, items: [...w.items, item] });
-      toast(`「${lineages.find((l) => l.id === lineage)?.name || '新作品'}」放進〈${w.name}〉了`);
+      // 不在那一層：請伺服器直接加進那一層（正在跑那一層的分頁會併進去；不會覆蓋任何人）
+      await api('POST', `/api/cworlds/${worldId}/items`, { item, client: clientId });
+      toast(`「${lineages.find((l) => l.id === lineage)?.name || '新作品'}」放進那一層了（回到那一層就看得到）`);
+      return null;
+    }
+    if (!(await ensureLeader())) {
+      toast('接手這一層沒成功，作品沒有放上去；再試一次');
       return null;
     }
     world.items.push(item);
@@ -259,8 +274,9 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   }
 
   // ---------------- 世界：進入、返回、存檔 ----------------
-  async function saveWorld() {
+  async function saveWorld(reason = 'save') {
     if (!world || saving || txn) return saving; // 換版交易中不存檔（不會存到半套）
+    if (role !== 'leader') return null; // 只看的分頁不存檔（不會蓋掉執行中的那個）
     saving = (async () => {
       try {
         for (const L of live.values()) {
@@ -275,15 +291,28 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
           }
         }
         const items = world.items.map((it) => ({ id: it.id, lineage: it.lineage, version: it.version, pos: it.pos, rotY: it.rotY || 0, state: it.state ?? null, schema: it.schema ?? null, rng: it.rng ?? null }));
-        const r = await api('PUT', `/api/cworlds/${world.id}`, { baseRevision: world.revision, items });
+        let r;
+        try {
+          r = await api('PUT', `/api/cworlds/${world.id}`, { baseRevision: world.revision, items, client: clientId, reason });
+        } catch (e) {
+          if (e.status !== 409 || e.data?.notLeader) throw e;
+          // 別人在這期間加了作品或傳送門：先把那些併進來（保留自己的狀態），再用新的 revision 存一次
+          stats.conflicts += 1;
+          await mergeFromServer();
+          const items2 = world.items.map((it) => ({ id: it.id, lineage: it.lineage, version: it.version, pos: it.pos, rotY: it.rotY || 0, state: it.state ?? null, schema: it.schema ?? null, rng: it.rng ?? null }));
+          r = await api('PUT', `/api/cworlds/${world.id}`, { baseRevision: world.revision, items: items2, client: clientId, reason });
+        }
         world.revision = r.revision;
         stats.saves += 1;
         lastSave = performance.now();
       } catch (e) {
-        if (e.status === 409) {
+        if (e.status === 409 && e.data?.notLeader) {
+          // 執行權在別的分頁：不覆蓋，這邊改成只看、同步成伺服器上的存檔
           stats.conflicts += 1;
-          toast('⚠️ 這一層剛被別人改過，重新載入這一層（你這幾秒的變化沒有存）');
-          await enter(world.id, { save: false });
+          demote('另一個分頁接手了這一層：這邊改成只看，已同步成最新存檔（這邊沒存到的幾秒不算）');
+        } else if (e.status === 409) {
+          stats.conflicts += 1;
+          toast('⚠️ 這一層一直在被改，稍後再存');
         } else toast(`⚠️ 存檔失敗：${e.message}`);
       } finally {
         saving = null;
@@ -343,9 +372,20 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     await swapChain; // 換版交易做完才離開這一層
     try {
       if (world && save) await saveWorld();
+      if (world && world.id !== worldId) await releaseLease();
+      closeEvents();
       const w = (await api('GET', `/api/cworlds/${worldId}`)).world;
       unloadWorld();
       world = w;
+      // 這一層沒人在跑就由這個分頁執行；有人在跑就先只看（要動手時再接手）
+      try {
+        const lr = await api('POST', `/api/cworlds/${worldId}/lease`, { client: clientId, action: 'claim' });
+        role = lr.leader ? 'leader' : 'follower';
+        if (lr.revision !== world.revision) world = (await api('GET', `/api/cworlds/${worldId}`)).world;
+      } catch {
+        role = 'follower';
+      }
+      lastRenew = performance.now();
       for (const it of world.items) {
         try {
           await spawnItem(it);
@@ -354,6 +394,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
         }
       }
       buildPortals();
+      openEvents(world.id);
       renderCrumb();
       renderPortals();
       stats.enters += 1;
@@ -370,8 +411,9 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     const name = (win.prompt?.('子世界的名字', `${world.name} 的子世界`) || '').trim() || `${world.name} 的子世界`;
     await saveWorld();
     const pos = [((world.portals.length % 5) - 2) * 2.4, 0, -6];
-    const r = await api('POST', '/api/cworlds', { parentId: world.id, name, pos, baseRevision: world.revision });
-    world.revision = r.parent.revision;
+    // 開子世界＝伺服器在這一層加一個傳送門（直接合併、通知其他分頁；不需要執行權）
+    const r = await api('POST', '/api/cworlds', { parentId: world.id, name, pos, client: clientId });
+    if (role !== 'leader' || r.parent.revision === world.revision + 1) world.revision = r.parent.revision;
     world.portals = r.parent.portals;
     for (const o of [...portalsG.children]) portalsG.remove(o);
     buildPortals();
@@ -444,6 +486,11 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     lineages = (await api('GET', '/api/lineages')).lineages;
     renderLib();
     const name = lineages.find((l) => l.id === j.lineage)?.name || '新作品';
+    if (J.context.worldId === world.id && !(await ensureLeader())) {
+      addPending(J.context.worldId, j.lineage, j.version, j.id, J.kind);
+      setJobText(`「${name}」v${j.version} 做好了：這一層正由另一個分頁執行，接手時會放上／換上`);
+      return;
+    }
     if (J.kind === 'new') {
       await placeNew(j.lineage, j.version, J.context.worldId);
       setJobText(`完成：「${name}」v${j.version}（你的 Codex，${j.attempts} 輪）${J.context.worldId === world.id ? '——已經放在你面前' : ''}`);
@@ -458,17 +505,21 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     }
   }
   const PENDING = 'vw_create_pending';
-  function addPending(worldId, lineage, version, jobId) {
+  function addPending(worldId, lineage, version, jobId, kind = 'modify') {
     const list = JSON.parse(win.localStorage.getItem(PENDING) || '[]');
-    list.push({ worldId, lineage, version, jobId });
+    list.push({ worldId, lineage, version, jobId, kind });
     win.localStorage.setItem(PENDING, JSON.stringify(list.slice(-50)));
   }
   function applyPending() {
+    if (role !== 'leader') return; // 執行者才換版、放作品
     const list = JSON.parse(win.localStorage.getItem(PENDING) || '[]');
     const mine = list.filter((x) => x.worldId === world.id);
     if (!mine.length) return;
     win.localStorage.setItem(PENDING, JSON.stringify(list.filter((x) => x.worldId !== world.id)));
-    for (const p of mine) swapLineage(p.lineage, p.version, { job: { id: p.jobId } });
+    for (const p of mine) {
+      if (p.kind === 'new') placeNew(p.lineage, p.version);
+      else swapLineage(p.lineage, p.version, { job: { id: p.jobId } });
+    }
   }
 
   // 換版是一筆交易（同一條作品線在這一層的所有實例一起換，不會半套）：
@@ -488,6 +539,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     return serial(() => doSwap(lineage, version, J));
   }
   async function doSwap(lineage, version, J) {
+    if (role !== 'leader' && !(await ensureLeader())) return { ok: false, error: '不是這一層的執行者' };
     const w0 = world;
     const targets = [...live.values()].filter((L) => L.lineage === lineage && L.version < version && !L.broken);
     if (!targets.length) return { ok: true, swapped: 0 };
@@ -562,7 +614,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     watching.set(lineage, { until: performance.now() + SWAP_WATCH_MS, olds: prepared.map((x) => x.old), newKey: newPkg.key, job: J?.job, version });
     txn = false;
     renderHud();
-    saveWorld();
+    saveWorld('swap'); // 存檔後伺服器會通知其他分頁：它們跟著換上新版
     toast(`🔁 ${prepared.length} 個「${newPkg.manifest.name || ''}」一起換上 v${version}（狀態保留）`);
     return { ok: true, swapped: prepared.length };
   }
@@ -621,6 +673,219 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     }
   }
 
+  // ---------------- 多分頁：執行權、接手、同步 ----------------
+  const leaseApi = (action) => api('POST', `/api/cworlds/${world.id}/lease`, { client: clientId, action });
+  async function renewLease(now = performance.now()) {
+    lastRenew = now;
+    try {
+      const r = await leaseApi('renew');
+      if (!r.leader && role === 'leader') demote('執行權過期（斷線太久）被別的分頁接手了：這邊改成只看');
+    } catch {
+      /* 斷線：EventSource 重連後會再確認 */
+    }
+  }
+  async function releaseLease() {
+    if (role !== 'leader' || !world) return;
+    role = 'none';
+    try {
+      await leaseApi('release');
+    } catch {
+      /* 伺服器會等 lease 到期 */
+    }
+  }
+  // 要動手：沒人跑就直接拿；有人在跑就請它存檔交出（伺服器最多等幾秒）
+  async function ensureLeader() {
+    if (role === 'leader') return true;
+    if (takeWaiter) return takeWaiter.promise;
+    let resolve;
+    const promise = new Promise((r) => (resolve = r));
+    takeWaiter = { resolve, promise };
+    setJobText('接手這一層中…（請正在執行的分頁存檔交出）');
+    const done = (ok) => {
+      if (!takeWaiter) return;
+      const t = takeWaiter;
+      takeWaiter = null;
+      t.resolve(ok);
+    };
+    setTimeout(() => done(false), 8000);
+    try {
+      const r = await leaseApi('take');
+      if (r.leader) await becomeLeader();
+      // 否則等 lease 事件（onLease → becomeLeader）
+    } catch {
+      done(false);
+    }
+    return promise;
+  }
+  // 拿到執行權：用伺服器上最新的存檔（上一個執行者交出的）重建這一層，再開始跑
+  async function becomeLeader() {
+    if (role === 'leader') return;
+    const w = (await api('GET', `/api/cworlds/${world.id}`)).world;
+    await reconcile(w, { refreshAll: true });
+    role = 'leader';
+    stats.takeovers += 1;
+    lastSave = performance.now();
+    lastRenew = performance.now();
+    renderCrumb();
+    setJobText('這個分頁接手了這一層：從最新存檔接著跑');
+    applyPending();
+    const t = takeWaiter;
+    takeWaiter = null;
+    t?.resolve(true);
+  }
+  function demote(message) {
+    if (role !== 'leader') return;
+    role = 'follower';
+    stats.demotions += 1;
+    renderCrumb();
+    if (message) setJobText(message, { warn: true });
+    resyncFromServer();
+  }
+  // 只看的分頁：整層照伺服器的存檔重建（版本變了就換上新版、狀態用存檔的）
+  async function resyncFromServer() {
+    if (!world) return;
+    try {
+      const w = (await api('GET', `/api/cworlds/${world.id}`)).world;
+      stats.resyncs += 1;
+      await reconcile(w, { refreshAll: true });
+    } catch {
+      /* 下一個事件再試 */
+    }
+  }
+  // 執行中的分頁：別人加了作品或傳送門 → 只併入新的，自己正在跑的保持原狀
+  async function mergeFromServer() {
+    if (!world) return;
+    const w = (await api('GET', `/api/cworlds/${world.id}`)).world;
+    stats.merges += 1;
+    await reconcile(w, { refreshAll: false });
+  }
+  async function reconcile(sw, { refreshAll }) {
+    if (!world || sw.id !== world.id) return;
+    const byId = new Map(sw.items.map((it) => [it.id, it]));
+    for (const [id, L] of [...live]) {
+      if (byId.has(id)) continue;
+      if (!refreshAll) continue; // 執行者自己剛放的（還沒存）不刪
+      host.kill(L.hostId);
+      live.delete(id);
+    }
+    const items = [];
+    for (const it of sw.items) {
+      const L = live.get(it.id);
+      if (L && !refreshAll) {
+        items.push(L.item); // 自己的狀態比伺服器新
+        continue;
+      }
+      if (L) {
+        host.kill(L.hostId);
+        live.delete(it.id);
+      }
+      items.push(it);
+      try {
+        await spawnItem(it);
+      } catch (e) {
+        toast(`⚠️ 載入 ${it.lineage} 失敗：${e.message}`);
+      }
+    }
+    if (!refreshAll) for (const L of live.values()) if (!items.includes(L.item)) items.push(L.item);
+    world.items = items;
+    world.revision = sw.revision;
+    if (JSON.stringify(sw.portals) !== JSON.stringify(world.portals)) {
+      world.portals = sw.portals;
+      for (const o of [...portalsG.children]) portalsG.remove(o);
+      buildPortals();
+      renderPortals();
+    }
+    if (selected && !live.has(selected)) select(null);
+    renderHud();
+    for (const k of new Set([...pkgs.keys()])) if (![...live.values()].some((L) => L.key === k) && ![...watching.values()].some((w) => w.olds.some((o) => o.key === k))) host.unload(k);
+  }
+  function closeEvents() {
+    es?.close();
+    es = null;
+    esWorld = null;
+  }
+  function openEvents(wid) {
+    closeEvents();
+    esWorld = wid;
+    const src = new EventSource(`/api/cworlds/${encodeURIComponent(wid)}/events?client=${encodeURIComponent(clientId)}`);
+    es = src;
+    const mineEv = (fn) => (e) => {
+      if (es !== src || esWorld !== world?.id) return;
+      let d;
+      try {
+        d = JSON.parse(e.data);
+      } catch {
+        return;
+      }
+      if (d.world && d.world !== world.id) return;
+      fn(d);
+    };
+    src.addEventListener('hello', mineEv(onHello));
+    src.addEventListener('revision', mineEv(onRevision));
+    src.addEventListener('lease', mineEv(onLease));
+    src.addEventListener('handover', mineEv(onHandover));
+    src.addEventListener('presence', mineEv((d) => {
+      followers = d.n || 0;
+      renderCrumb();
+    }));
+    src.onerror = () => {
+      if (es !== src) return;
+      if (connState !== 'reconnecting') {
+        connState = 'reconnecting';
+        renderCrumb();
+      }
+    };
+  }
+  let helloCount = 0;
+  async function onHello(d) {
+    helloCount += 1;
+    if (connState === 'reconnecting') {
+      connState = 'ok';
+      stats.reconnects += 1;
+    }
+    renderCrumb();
+    if (helloCount === 1 && d.revision === world.revision) return;
+    // 重新連上：確認執行權還在不在、存檔有沒有變
+    if (role === 'leader') {
+      if (d.lease && d.lease.clientId !== clientId) demote('斷線期間這一層被別的分頁接手了：這邊改成只看，已同步成最新存檔（斷線期間沒存到的不算）');
+      else {
+        if (!d.lease) {
+          const r = await leaseApi('claim').catch(() => null);
+          if (r && !r.leader) return demote('斷線期間這一層被別的分頁接手了：這邊改成只看');
+        }
+        if (d.revision !== world.revision) await mergeFromServer();
+      }
+    } else if (d.revision !== world.revision) await resyncFromServer();
+  }
+  async function onRevision(d) {
+    if (d.by === clientId) return; // 自己存的
+    if (role === 'leader') {
+      if (d.reason === 'append' || d.reason === 'portal') await mergeFromServer();
+      else demote('另一個分頁存了這一層：這邊改成只看');
+    } else await resyncFromServer();
+  }
+  async function onLease(d) {
+    if (d.clientId === clientId) {
+      if (role !== 'leader') await becomeLeader();
+    } else if (role === 'leader') demote('另一個分頁接手了這一層：這邊改成只看');
+    else renderCrumb();
+  }
+  // 有人要接手：存好最新狀態再交出（不會丟分數）
+  async function onHandover(d) {
+    if (role !== 'leader' || d.from !== clientId || d.to === clientId) return;
+    await swapChain;
+    await saveWorld('handover');
+    stats.handovers += 1;
+    role = 'follower';
+    renderCrumb();
+    try {
+      await leaseApi('release');
+    } catch {
+      /* 伺服器時間到也會交出 */
+    }
+    setJobText('另一個分頁接手了這一層（最新狀態已經存好交給它）；這邊改成只看');
+  }
+
   // ---------------- 輸入 ----------------
   const ray = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
@@ -642,8 +907,12 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     if (ph && (!hit || ph.distance <= (hit.distance ?? Infinity))) {
       let o = ph.object;
       while (o && !o.userData.portal) o = o.parent;
-      if (o) enter(o.userData.portal);
+      if (o) enter(o.userData.portal); // 走進傳送門：只看的分頁也可以（不用接手這一層）
       return { portal: o?.userData.portal };
+    }
+    if (role === 'follower' && hit) {
+      ensureLeader(); // 只看的分頁：點作品這一下拿來接手（不把點擊送給作品，避免兩邊各算各的）
+      return { takeover: true };
     }
     if (!hit) {
       select(null);
@@ -659,6 +928,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     if (e.target.closest?.('input, textarea')) return;
     const k = KEYMAP[e.key];
     if (k) {
+      if (role === 'follower') ensureLeader();
       keys[k] = true;
       tappedAt[k] = performance.now();
       e.preventDefault();
@@ -756,8 +1026,10 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   function update(dt) {
     if (!host || !world || busy) return;
     if (txn) return; // 換版交易中：整層暫停步進（狀態不會在拿存檔與切換之間變動）
-    acc = Math.min(acc + dt, 0.25);
     const now = performance.now();
+    if (role !== 'leader') return; // 只看：不執行作品（畫面照常畫，等伺服器的存檔同步）
+    if (now - lastRenew > 4000) renewLease(now);
+    acc = Math.min(acc + dt, 0.25);
     while (acc >= TICK) {
       acc -= TICK;
       simT += TICK;
@@ -772,7 +1044,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
       host.tick(TICK, inputs);
     }
     finishWatches(now);
-    if (now - lastSave > SAVE_EVERY_MS && live.size) saveWorld();
+    if (now - lastSave > (followers > 1 ? 1500 : SAVE_EVERY_MS) && live.size) saveWorld(); // 有別的分頁在看：存勤一點，它們才跟得上
     if (selected) {
       const L = live.get(selected);
       if (L) selRing.position.set(L.item.pos[0], 0.02 + Math.sin(now / 300) * 0.01, L.item.pos[2]);
@@ -817,7 +1089,12 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     camera.position.set(0, 3.2, 8.5);
     const w = new URLSearchParams(win.location.search).get('w') || 'root';
     await enter(w, { save: false }).catch(() => enter('root', { save: false }));
-    on(win, 'pagehide', () => saveWorld());
+    on(win, 'pagehide', () => {
+      if (role !== 'leader' || !world) return;
+      saveWorld('leave');
+      // 交出執行權（keepalive：頁面關掉也送得出去）
+      fetch(`/api/cworlds/${world.id}/lease`, { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client: clientId, action: 'release' }), credentials: 'same-origin' }).catch(() => {});
+    });
   }
 
   // 眼鏡模式：手指著哪裡（實體或傳送門）、捏下去＝點它、HUD 上顯示說話與工作狀態
@@ -893,6 +1170,10 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
         watching: [...watching.keys()],
         host: host?.stats(),
         stats: { ...stats },
+        role,
+        clientId,
+        followers,
+        connState,
         selected,
         mode,
       };

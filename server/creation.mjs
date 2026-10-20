@@ -39,6 +39,43 @@ export function createCreation({ dataDir, log = () => {}, denoBin = process.env.
   const waiters = new Map(); // creatorId → Set(resolve)
   const pairFails = []; // 配對碼猜錯的時間（擋暴力猜碼：每分鐘最多 20 次）
   const lastSeen = new Map(); // creatorId → { at, label }
+  // 同一層世界可以同時在好幾個分頁／瀏覽器開著：只有拿到「執行權」（lease）的那一個在跑作品、存檔；
+  // 其他的只看（跟著伺服器的存檔同步）。誰要動手（點、說話、放作品）就先接手：伺服器通知目前的執行者存檔、交出，再交給接手的人。
+  // 執行者斷線：lease 到期（預設 15 秒沒續）就能被接手，從最後的存檔接著跑。所有變動都用 revision 事件（SSE）通知同一層的其他分頁。
+  const LEASE_MS = Number(process.env.CREATION_LEASE_MS) || 15000;
+  const HANDOVER_MS = Number(process.env.CREATION_HANDOVER_MS) || 3000;
+  const leases = new Map(); // worldId → { clientId, creatorId, until, pending: { to, creatorId, at } | null }
+  const listeners = new Map(); // worldId → Set({ res, clientId, creatorId })
+  const validClient = (c) => typeof c === 'string' && /^[\w-]{8,64}$/.test(c);
+  function leaseOf(worldId) {
+    const L = leases.get(worldId);
+    if (L && L.until < Date.now()) {
+      leases.delete(worldId);
+      return null;
+    }
+    return L || null;
+  }
+  const leaseInfo = (worldId) => {
+    const L = leaseOf(worldId);
+    return L ? { clientId: L.clientId, until: L.until, pending: L.pending?.to || null } : null;
+  };
+  function broadcast(worldId, type, data) {
+    const set = listeners.get(worldId);
+    if (!set) return;
+    const msg = `event: ${type}\ndata: ${JSON.stringify({ ...data, world: worldId, at: Date.now() })}\n\n`;
+    for (const l of set) {
+      try {
+        l.res.write(msg);
+      } catch {
+        /* 斷了：close 事件會清掉 */
+      }
+    }
+  }
+  function grant(worldId, clientId, creatorId, extra = {}) {
+    leases.set(worldId, { clientId, creatorId, until: Date.now() + LEASE_MS, pending: null });
+    broadcast(worldId, 'lease', { clientId, revision: st.worlds[worldId]?.revision ?? 0, ...extra });
+  }
+  const presence = (worldId) => broadcast(worldId, 'presence', { n: listeners.get(worldId)?.size || 0, clients: [...(listeners.get(worldId) || [])].map((l) => l.clientId) });
 
   async function load() {
     await fs.mkdir(PKG_DIR, { recursive: true });
@@ -444,7 +481,7 @@ export function createCreation({ dataDir, log = () => {}, denoBin = process.env.
     }
     if (req.method === 'GET' && (m = p.match(/^\/api\/cworlds\/([\w-]+)$/))) {
       const w = st.worlds[m[1]];
-      return w ? send(res, 200, { world: publicWorld(w) }) : send(res, 404, { error: '找不到這個世界' }), true;
+      return w ? send(res, 200, { world: publicWorld(w), lease: leaseInfo(w.id) }) : send(res, 404, { error: '找不到這個世界' }), true;
     }
     if (!me) return send(res, 401, { error: '先建立創作者身分（POST /api/me）' }), true;
 
@@ -520,32 +557,121 @@ export function createCreation({ dataDir, log = () => {}, denoBin = process.env.
         return send(res, 200, { job: publicJob(j) }), true;
       }
     }
+    // 同一層的即時通知（SSE）：revision（有人存檔／加作品／加傳送門）、lease（誰在跑）、handover（有人要接手）、presence（幾個分頁開著）
+    if (req.method === 'GET' && (m = p.match(/^\/api\/cworlds\/([\w-]+)\/events$/))) {
+      const w = st.worlds[m[1]];
+      const client = url.searchParams.get('client');
+      if (!w || !validClient(client)) return send(res, 400, { error: '世界或 client 不對' }), true;
+      res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+      res.write(`retry: 1500\nevent: hello\ndata: ${JSON.stringify({ world: w.id, revision: w.revision, lease: leaseInfo(w.id) })}\n\n`);
+      const l = { res, clientId: client, creatorId: me.id };
+      const set = listeners.get(w.id) || new Set();
+      set.add(l);
+      listeners.set(w.id, set);
+      presence(w.id);
+      const ping = setInterval(() => res.write(': ping\n\n'), 15000);
+      req.on('close', () => {
+        clearInterval(ping);
+        set.delete(l);
+        if (!set.size) listeners.delete(w.id);
+        presence(w.id);
+      });
+      return true;
+    }
     if (p === '/api/cworlds' && req.method === 'POST') {
       const body = await readBody(req, 4096);
       const parent = st.worlds[body.parentId];
       if (!parent) return send(res, 400, { error: '找不到上一層世界' }), true;
       const mine = Object.values(st.worlds).filter((w) => w.creatorId === me.id).length;
       if (mine >= LIMITS.worldsPerCreator || Object.keys(st.worlds).length >= LIMITS.worldsTotal) return send(res, 429, { error: '世界數量到上限了' }), true;
-      if (Number.isInteger(body.baseRevision) && body.baseRevision !== parent.revision) return send(res, 409, { error: '上一層剛被改過，請重新整理', revision: parent.revision }), true;
+      // 開子世界只是在上一層「加一個傳送門」：伺服器直接合併、通知上一層的其他分頁（不需要上一層的執行權，也不會覆蓋誰）
       const w = { id: rid('w', 4), parentId: parent.id, name: clampStr(body.name, 24) || `子世界 ${parent.portals.length + 1}`, creatorId: me.id, revision: 0, items: [], portals: [], createdAt: Date.now() };
       st.worlds[w.id] = w;
       parent.portals.push({ id: rid('p', 3), world: w.id, name: w.name, pos: isVec3(body.pos) ? body.pos : [parent.portals.length * 2.2 - 3, 0, -4] });
       parent.revision += 1;
       await saveNow();
+      broadcast(parent.id, 'revision', { revision: parent.revision, by: validClient(body.client) ? body.client : null, reason: 'portal' });
       return send(res, 200, { world: publicWorld(w), parent: publicWorld(parent) }), true;
     }
     if (req.method === 'PUT' && (m = p.match(/^\/api\/cworlds\/([\w-]+)$/))) {
       const w = st.worlds[m[1]];
       if (!w) return send(res, 404, { error: '找不到這個世界' }), true;
       const body = await readBody(req, LIMITS.itemsPerWorld * (LIMITS.state + 512));
-      if (body.baseRevision !== w.revision) return send(res, 409, { error: '這個世界剛被別人改過', revision: w.revision }), true;
+      const client = validClient(body.client) ? body.client : null;
+      // 執行權：別的分頁正在跑這一層 → 不收（不靜默覆蓋）；沒人跑 → 存檔的人順便拿到
+      const L = leaseOf(w.id);
+      if (L && L.clientId !== client) return send(res, 409, { error: '這一層正由另一個分頁執行，你這邊只能看；要動手請先接手', notLeader: true, leader: L.clientId, revision: w.revision }), true;
+      if (body.baseRevision !== w.revision) return send(res, 409, { error: '這個世界剛被改過（別人加了作品或傳送門）', revision: w.revision }), true;
       const r = cleanItems(body.items);
       if (r.error) return send(res, 400, { error: r.error }), true;
       w.items = r.items;
       w.revision += 1;
       w.updatedAt = Date.now();
+      if (client) {
+        if (L) L.until = Date.now() + LEASE_MS;
+        else leases.set(w.id, { clientId: client, creatorId: me.id, until: Date.now() + LEASE_MS, pending: null });
+      }
       save();
+      broadcast(w.id, 'revision', { revision: w.revision, by: client, reason: clampStr(body.reason, 20) || 'save' });
+      return send(res, 200, { revision: w.revision, lease: leaseInfo(w.id) }), true;
+    }
+    // 放一個作品到某一層（不必是自己正在跑的那層）：伺服器直接加進去、通知那一層的分頁；正在跑那層的分頁會把它併進來
+    if (req.method === 'POST' && (m = p.match(/^\/api\/cworlds\/([\w-]+)\/items$/))) {
+      const w = st.worlds[m[1]];
+      if (!w) return send(res, 404, { error: '找不到這個世界' }), true;
+      const body = await readBody(req, LIMITS.state + 4096);
+      if (w.items.some((i) => i.id === body.item?.id)) return send(res, 409, { error: '這個實例已經在了' }), true;
+      const r = cleanItems([...w.items, body.item]);
+      if (r.error) return send(res, 400, { error: r.error }), true;
+      w.items = r.items;
+      w.revision += 1;
+      save();
+      broadcast(w.id, 'revision', { revision: w.revision, by: validClient(body.client) ? body.client : null, reason: 'append', itemId: body.item.id });
       return send(res, 200, { revision: w.revision }), true;
+    }
+    // 執行權：claim＝沒人跑才拿；take＝要動手：有人在跑就請他存檔交出（最多等 HANDOVER_MS，沒回應就直接接手）；renew；release
+    if (req.method === 'POST' && (m = p.match(/^\/api\/cworlds\/([\w-]+)\/lease$/))) {
+      const w = st.worlds[m[1]];
+      if (!w) return send(res, 404, { error: '找不到這個世界' }), true;
+      const body = await readBody(req, 2048);
+      const client = body.client;
+      if (!validClient(client)) return send(res, 400, { error: 'client 不對' }), true;
+      const L = leaseOf(w.id);
+      const mine = L && L.clientId === client;
+      if (body.action === 'renew') {
+        if (!mine) return send(res, 200, { leader: false, lease: leaseInfo(w.id), revision: w.revision }), true;
+        L.until = Date.now() + LEASE_MS;
+        return send(res, 200, { leader: true, pending: L.pending?.to || null, revision: w.revision }), true;
+      }
+      if (body.action === 'release') {
+        if (mine) {
+          if (L.pending) grant(w.id, L.pending.to, L.pending.creatorId, { from: client });
+          else {
+            leases.delete(w.id);
+            broadcast(w.id, 'lease', { clientId: null, revision: w.revision, from: client });
+          }
+        }
+        return send(res, 200, { leader: false, lease: leaseInfo(w.id), revision: w.revision }), true;
+      }
+      if (body.action === 'claim' || body.action === 'take') {
+        if (!L || mine) {
+          if (!mine) grant(w.id, client, me.id);
+          else L.until = Date.now() + LEASE_MS;
+          return send(res, 200, { leader: true, revision: w.revision }), true;
+        }
+        if (body.action === 'claim') return send(res, 200, { leader: false, lease: leaseInfo(w.id), revision: w.revision }), true;
+        // take：請目前的執行者存檔交出
+        if (L.pending?.to !== client) {
+          L.pending = { to: client, creatorId: me.id, at: Date.now() };
+          broadcast(w.id, 'handover', { from: L.clientId, to: client });
+          setTimeout(() => {
+            const now = leaseOf(w.id);
+            if (now && now.pending?.to === client && now.clientId === L.clientId) grant(w.id, client, me.id, { from: L.clientId, forced: true });
+          }, HANDOVER_MS);
+        }
+        return send(res, 200, { leader: false, pending: true, lease: leaseInfo(w.id), revision: w.revision }), true;
+      }
+      return send(res, 400, { error: 'action 要是 claim／take／renew／release' }), true;
     }
     return send(res, 404, { error: 'unknown creation api' }), true;
   }
