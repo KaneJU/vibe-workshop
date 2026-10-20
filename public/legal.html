@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>授權與第三方聲明 · Vibe 工坊</title>
+    <style>
+      :root {
+        --cyan: #38e1ff;
+        --text: #d9f6ff;
+        --muted: #8fb0c4;
+        --line: rgba(56, 225, 255, 0.25);
+        --card: #08121f;
+        --warn: #ffd166;
+        color-scheme: dark;
+        font-family: -apple-system, BlinkMacSystemFont, 'PingFang TC', 'Noto Sans TC', sans-serif;
+      }
+      * { box-sizing: border-box; }
+      html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+      body { margin: 0; background: #05080f; color: var(--text); font-size: 15px; line-height: 1.65; }
+      main {
+        max-width: 820px; margin: 0 auto;
+        padding: calc(12px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));
+      }
+      a { color: #7cecff; text-underline-offset: 2px; overflow-wrap: anywhere; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.86em; background: rgba(56, 225, 255, 0.08); border-radius: 4px; padding: 1px 4px; overflow-wrap: anywhere; }
+      .top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      .brand { font-weight: 800; letter-spacing: 0.18em; color: var(--cyan); text-decoration: none; text-shadow: 0 0 12px rgba(56, 225, 255, 0.35); }
+      .brand span { color: var(--text); letter-spacing: 0.05em; }
+      .home-link {
+        display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 14px;
+        border: 1px solid var(--line); border-radius: 10px; background: rgba(56, 225, 255, 0.08); color: var(--text); text-decoration: none;
+      }
+      .home-link:hover { border-color: var(--cyan); background: rgba(56, 225, 255, 0.18); }
+      h1 { margin: 18px 0 2px; font-size: 24px; line-height: 1.3; color: var(--cyan); }
+      .copyright { margin: 0 0 10px; font-size: 17px; font-weight: 700; }
+      .meta { color: var(--muted); font-size: 13px; }
+      p { margin: 8px 0; }
+      nav.toc, section { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin: 14px 0; }
+      nav.toc ol { margin: 4px 0; }
+      h2 { margin: 0 0 8px; font-size: 19px; line-height: 1.35; color: var(--cyan); }
+      h3 { margin: 0 0 4px; font-size: 16px; line-height: 1.4; }
+      .ver { margin-left: 6px; font-size: 13px; font-weight: 400; color: var(--muted); white-space: nowrap; }
+      .tag { display: inline-block; margin-left: 6px; padding: 0 7px; border-radius: 6px; font-size: 12px; font-weight: 600; vertical-align: 2px; white-space: nowrap; }
+      .tag.ship { background: var(--cyan); color: #04121c; }
+      .tag.dev { background: #c4b5fd; color: #160c33; }
+      .tag.todo { background: var(--warn); color: #1b1300; }
+      .item { border-top: 1px solid var(--line); padding: 12px 0 4px; }
+      dl { margin: 0; display: grid; grid-template-columns: 1fr; column-gap: 12px; }
+      dt { margin-top: 8px; color: var(--muted); font-size: 13px; }
+      dd { margin: 0; overflow-wrap: anywhere; }
+      @media (min-width: 640px) {
+        dl { grid-template-columns: 7.5em 1fr; }
+        dt { margin-top: 0; padding: 3px 0 6px; }
+        dd { padding-bottom: 6px; }
+      }
+      .two { display: grid; grid-template-columns: 1fr; gap: 10px; }
+      @media (min-width: 640px) { .two { grid-template-columns: 1fr 1fr; } }
+      .box { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: rgba(56, 225, 255, 0.04); }
+      ul, ol { margin: 6px 0; padding-left: 1.3em; }
+      li { margin: 5px 0; }
+      .todo-list li::marker { color: var(--warn); font-weight: 700; }
+      pre {
+        margin: 8px 0; padding: 12px; background: #02060c; border: 1px solid var(--line); border-radius: 10px; color: #cfe9f5;
+        font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
+      }
+      footer { margin: 22px 0 6px; text-align: center; color: var(--muted); font-size: 13px; }
+      footer p { margin: 10px 0 0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="top">
+        <a class="brand" href="/">VIBE <span>工坊</span></a>
+        <a class="home-link" href="/">← 回首頁</a>
+      </div>
+
+      <header>
+        <h1>授權與第三方聲明</h1>
+        <p class="copyright">© 2026 KaneJU · Vibe 工坊</p>
+        <p>本專案以 <b>MIT 授權</b>釋出，條文與原始碼根目錄的 <code>LICENSE</code> 檔一致（全文見第 1 節）。遊戲另外用到的第三方程式庫、模型與素材，版權屬於各自的作者，依各自的授權條款提供，列在第 3～5 節。</p>
+        <p class="meta">本頁依 2026-10-21 的 repo 內容整理；套件版本讀自 <code>node_modules/&lt;套件&gt;/package.json</code>，copyright 行照套件內的 LICENSE／NOTICE 檔逐字抄錄。</p>
+      </header>
+
+      <nav class="toc" aria-label="目錄">
+        <ol>
+          <li><a href="#project">本專案授權（MIT）</a></li>
+          <li><a href="#attribution">本專案署名與第三方作者</a></li>
+          <li><a href="#runtime">隨遊戲提供給玩家的第三方元件</a></li>
+          <li><a href="#dev">開發／測試工具（不隨遊戲提供）</a></li>
+          <li><a href="#fixtures">測試素材（不隨遊戲提供）</a></li>
+          <li><a href="#review">素材來源與待核</a></li>
+          <li><a href="#texts">授權條文全文（three.js 的 MIT、Apache License 2.0）</a></li>
+        </ol>
+      </nav>
+
+      <section id="project">
+        <h2>1. 本專案授權（MIT）</h2>
+        <p>以下是 repo 根目錄 <code>LICENSE</code> 的全文（逐字）：</p>
+        <pre id="license-project">
+MIT License
+
+Copyright (c) 2026 KaneJU
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</pre>
+      </section>
+
+      <section id="attribution">
+        <h2>2. 本專案署名與第三方作者</h2>
+        <div class="two">
+          <div class="box">
+            <h3>本專案署名</h3>
+            <p><b>© 2026 KaneJU · Vibe 工坊</b></p>
+            <p>授權：MIT（<code>LICENSE</code>：Copyright (c) 2026 KaneJU）。適用於 Vibe 工坊自己的程式與文件；第 3～5 節列出的第三方元件與素材不在其內。</p>
+            <p>由 AI 生成的內容，本頁只說明它是怎麼產生的，不對權利歸屬下結論（見第 6 節）。</p>
+          </div>
+          <div class="box">
+            <h3>第三方作者</h3>
+            <ul>
+              <li>three.js authors（three.js）</li>
+              <li>Dimforge EURL（Rapier 物理引擎）</li>
+              <li>Google（MediaPipe Tasks Vision、Hand Landmarker 模型）</li>
+              <li>Amazon（WebXR Input Profiles：VR 手把模型）</li>
+              <li>開發／測試工具：Microsoft（Playwright）、Meta（iwer）等</li>
+              <li>測試素材：Jason Auerbach、Andrew Pertsev（Wikimedia Commons）</li>
+            </ul>
+            <p>這些元件的版權屬於各自的作者，依各自的授權提供；本專案的 MIT 授權不改變它們原本的條款。</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="runtime">
+        <h2>3. 隨遊戲提供給玩家的第三方元件</h2>
+        <p>玩家開遊戲時，瀏覽器會載入下列元件（runtime）。MediaPipe 與手勢模型在用到手勢辨識時才載入；VR 手把模型只在進入 VR 時下載。</p>
+
+        <div class="item" id="three">
+          <h3>three.js<span class="ver">0.186.1</span><span class="tag ship">隨遊戲提供</span></h3>
+          <dl>
+            <dt>套件</dt>
+            <dd><code>three</code> 0.186.1</dd>
+            <dt>授權</dt>
+            <dd>MIT（全文見 <a href="#mit-three">7.1</a>）</dd>
+            <dt>Copyright</dt>
+            <dd><code>Copyright © 2010-2026 three.js authors</code>（照套件 <code>LICENSE</code> 逐字）</dd>
+            <dt>來源</dt>
+            <dd><a href="https://threejs.org/">https://threejs.org/</a> · <a href="https://github.com/mrdoob/three.js">https://github.com/mrdoob/three.js</a> · <a href="https://www.npmjs.com/package/three/v/0.186.1">npm three@0.186.1</a></dd>
+            <dt>在遊戲裡</dt>
+            <dd>3D 畫面與 VR。伺服器以 <code>/vendor/three/</code> 提供這個套件；遊戲載入 <code>build/</code> 的核心，以及 <code>examples/jsm/</code> 的 OrbitControls、RoomEnvironment、XRControllerModelFactory（連帶 GLTFLoader 與 <code>libs/motion-controllers.module.js</code>）、BufferGeometryUtils 等附加模組。</dd>
+            <dt>附註</dt>
+            <dd><code>examples/jsm/libs/motion-controllers.module.js</code> 是 three 內附的第三方檔案，來自 <code>@webxr-input-profiles/motion-controllers</code> 1.0.0（該 npm 套件的 LICENSE.md：MIT，<code>Copyright (c) 2019 Amazon</code>）。</dd>
+          </dl>
+        </div>
+
+        <div class="item" id="rapier">
+          <h3>Rapier 物理引擎<span class="ver">0.21.0</span><span class="tag ship">隨遊戲提供</span></h3>
+          <dl>
+            <dt>套件</dt>
+            <dd><code>@dimforge/rapier3d-compat</code> 0.21.0</dd>
+            <dt>授權</dt>
+            <dd>Apache-2.0（全文見 <a href="#apache-2">7.2</a>）</dd>
+            <dt>Copyright</dt>
+            <dd><code>Copyright 2020 Dimforge EURL</code>（照套件 <code>LICENSE</code> 附錄逐字）；套件內沒有 NOTICE 檔。</dd>
+            <dt>來源</dt>
+            <dd><a href="https://rapier.rs">https://rapier.rs</a> · <a href="https://github.com/dimforge/rapier">https://github.com/dimforge/rapier</a> · <a href="https://www.npmjs.com/package/@dimforge/rapier3d-compat/v/0.21.0">npm @dimforge/rapier3d-compat@0.21.0</a></dd>
+            <dt>在遊戲裡</dt>
+            <dd>物理（掉落、碰撞、抓取、裝置）。伺服器以 <code>/vendor/rapier/</code> 提供套件 <code>dist/</code> 下的檔案（WebAssembly 內嵌在 JS 裡）。</dd>
+          </dl>
+        </div>
+
+        <div class="item" id="mediapipe">
+          <h3>MediaPipe Tasks Vision<span class="ver">0.10.35</span><span class="tag ship">隨遊戲提供</span></h3>
+          <dl>
+            <dt>套件</dt>
+            <dd><code>@mediapipe/tasks-vision</code> 0.10.35（package.json 鎖定這個版本）</dd>
+            <dt>授權</dt>
+            <dd>Apache-2.0（套件 package.json；全文見 <a href="#apache-2">7.2</a>）</dd>
+            <dt>作者</dt>
+            <dd>Google（package.json 的 author：<code>mediapipe@google.com</code>）</dd>
+            <dt>Copyright／NOTICE</dt>
+            <dd>套件內沒有 LICENSE 或 NOTICE 檔，提供給玩家的檔案也沒有版權標頭。套件附的 source map（<code>vision_bundle.mjs.map</code>）裡，原始碼標頭是 <code>Copyright Google LLC</code> 與 <code>Copyright The Closure Library Authors.</code>（兩者都標 <code>SPDX-License-Identifier: Apache-2.0</code>）。</dd>
+            <dt>提供的檔案</dt>
+            <dd><code>vision_bundle.mjs</code>，以及 <code>wasm/</code> 下的 <code>vision_wasm_internal</code>、<code>vision_wasm_nosimd_internal</code>、<code>vision_wasm_module_internal</code>（各一個 <code>.js</code> 與 <code>.wasm</code>）；伺服器以 <code>/vendor/mediapipe/</code> 提供。</dd>
+            <dt>來源</dt>
+            <dd><a href="https://www.npmjs.com/package/@mediapipe/tasks-vision/v/0.10.35">npm @mediapipe/tasks-vision@0.10.35</a> · <a href="http://mediapipe.dev">http://mediapipe.dev</a>（package.json 的 homepage）· <a href="https://github.com/google-ai-edge/mediapipe">https://github.com/google-ai-edge/mediapipe</a></dd>
+            <dt>在遊戲裡</dt>
+            <dd>手勢辨識（用到時才載入）。</dd>
+          </dl>
+        </div>
+
+        <div class="item" id="hand-model">
+          <h3>MediaPipe Hand Landmarker 模型<span class="ver">float16 第 1 版</span><span class="tag ship">隨遊戲提供</span></h3>
+          <dl>
+            <dt>檔案</dt>
+            <dd><code>hand_landmarker.task</code>，7,819,105 bytes</dd>
+            <dt>SHA-256</dt>
+            <dd><code>fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1</code></dd>
+            <dt>授權</dt>
+            <dd>Apache-2.0（依 Google 官方 model card：<a href="https://storage.googleapis.com/mediapipe-assets/Model%20Card%20Hand%20Tracking%20(Lite_Full)%20with%20Fairness%20Oct%202021.pdf">Model Card Hand Tracking (Lite/Full) with Fairness, Oct 2021</a>，其中「LICENSED UNDER」寫 Apache License, Version 2.0；全文見 <a href="#apache-2">7.2</a>）</dd>
+            <dt>作者</dt>
+            <dd>Google</dd>
+            <dt>來源</dt>
+            <dd><a href="https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task">https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task</a></dd>
+            <dt>取得方式</dt>
+            <dd>這個檔不放在 git。由 <code>npm run fetch:models</code> 從上面的來源下載到 <code>models/</code>，並核對大小與 SHA-256；伺服器以 <code>/vendor/models/hand_landmarker.task</code> 提供，瀏覽器載入前也會再核對一次。</dd>
+          </dl>
+        </div>
+
+        <div class="item" id="webxr-profiles">
+          <h3>WebXR Input Profiles 手把模型<span class="ver">只在進入 VR 時</span><span class="tag ship">玩家的瀏覽器從 CDN 下載</span></h3>
+          <dl>
+            <dt>怎麼來的</dt>
+            <dd>玩家進入 VR 時，three 的 XRControllerModelFactory 會讓瀏覽器直接從 jsDelivr CDN 下載手把 3D 模型與設定檔（預設路徑 <code>https://cdn.jsdelivr.net/npm/@webxr-input-profiles/assets@1.0/dist/profiles</code>）。這些檔案不在 repo，也不經過本伺服器。</dd>
+            <dt>套件</dt>
+            <dd><code>@webxr-input-profiles/assets</code>，版本範圍 <code>@1.0</code>（2026-10-21 查詢時對應 1.0.20）</dd>
+            <dt>授權</dt>
+            <dd>MIT；<code>Copyright (c) 2019 Amazon</code>（該套件 LICENSE.md）</dd>
+            <dt>附註</dt>
+            <dd>該套件 README 說明：部分模型描繪裝置廠商的註冊商標，授權不包含這些商標的使用權。</dd>
+            <dt>來源</dt>
+            <dd><a href="https://github.com/immersive-web/webxr-input-profiles">https://github.com/immersive-web/webxr-input-profiles</a> · <a href="https://www.npmjs.com/package/@webxr-input-profiles/assets">npm @webxr-input-profiles/assets</a></dd>
+          </dl>
+        </div>
+      </section>
+
+      <section id="dev">
+        <h2>4. 開發／測試工具（不隨遊戲提供給玩家）</h2>
+        <p>下面這些不是 runtime：只用在開發、測試，或在架設伺服器的電腦上執行，不會載入到玩家的瀏覽器。</p>
+
+        <div class="item" id="iwer">
+          <h3>iwer<span class="ver">2.6.0</span><span class="tag dev">開發／測試</span></h3>
+          <dl>
+            <dt>授權</dt>
+            <dd>MIT；<code>Copyright (c) Meta Platforms, Inc. and affiliates.</code>（套件 <code>LICENSE</code>）</dd>
+            <dt>來源</dt>
+            <dd><a href="https://github.com/meta-quest/immersive-web-emulation-runtime">https://github.com/meta-quest/immersive-web-emulation-runtime</a> · <a href="https://www.npmjs.com/package/iwer/v/2.6.0">npm iwer@2.6.0</a></dd>
+            <dt>用途</dt>
+            <dd>package.json 的 devDependencies；<code>tests/xr.mjs</code> 用它在測試瀏覽器裡模擬 VR 頭戴與手把。</dd>
+            <dt>相依套件</dt>
+            <dd>gl-matrix 3.4.4（MIT，<code>Copyright (c) 2015-2025, Brandon Jones, Colin MacKenzie IV.</code>）、webxr-layers-polyfill 1.1.0（Apache-2.0）</dd>
+          </dl>
+        </div>
+
+        <div class="item" id="playwright">
+          <h3>Playwright<span class="ver">1.55.1</span><span class="tag dev">開發／測試</span></h3>
+          <dl>
+            <dt>套件</dt>
+            <dd><code>playwright</code> 1.55.1（連同 <code>playwright-core</code> 1.55.1）</dd>
+            <dt>授權</dt>
+            <dd>Apache-2.0（全文見 <a href="#apache-2">7.2</a>）</dd>
+            <dt>NOTICE</dt>
+            <dd>套件 <code>NOTICE</code> 檔全文（逐字；另附 <code>ThirdPartyNotices.txt</code>）：
+              <pre id="notice-playwright">
+Playwright
+Copyright (c) Microsoft Corporation
+
+This software contains code derived from the Puppeteer project (https://github.com/puppeteer/puppeteer),
+available under the Apache 2.0 license (https://github.com/puppeteer/puppeteer/blob/master/LICENSE).
+</pre>
+            </dd>
+            <dt>來源</dt>
+            <dd><a href="https://playwright.dev">https://playwright.dev</a> · <a href="https://github.com/microsoft/playwright">https://github.com/microsoft/playwright</a> · <a href="https://www.npmjs.com/package/playwright/v/1.55.1">npm playwright@1.55.1</a></dd>
+            <dt>用途</dt>
+            <dd>package.json 的 devDependencies：自動測試與截圖。伺服器也會在本機用它開 Chromium 幫零件拍縮圖、讓 Codex 看自己做出來的東西（<code>fabricator/snapshotter.mjs</code>）；這只在架設伺服器的電腦上執行。Chromium 本體由 <code>npx playwright install chromium</code> 另外下載，不在 repo。</dd>
+          </dl>
+        </div>
+
+        <div class="item" id="codex">
+          <h3>OpenAI Codex CLI<span class="ver">外部程式</span><span class="tag dev">不在 repo</span></h3>
+          <dl>
+            <dt>用途</dt>
+            <dd>伺服器呼叫的外部程式（<code>CODEX_BIN</code>），依玩家的指令生成零件與世界模組的程式碼。不在 repo、也不在 node_modules，要另外安裝。</dd>
+            <dt>來源</dt>
+            <dd><a href="https://github.com/openai/codex">https://github.com/openai/codex</a>（原始碼以 Apache-2.0 授權）</dd>
+          </dl>
+        </div>
+      </section>
+
+      <section id="fixtures">
+        <h2>5. 測試素材（不隨遊戲提供）</h2>
+        <p>只放在 repo 的 <code>tests/fixtures/hands/</code>，給手勢辨識的自動測試用，不隨遊戲提供給玩家。兩張都縮小為 640 px 寬。</p>
+        <div class="item">
+          <h3>File:Human Hand.JPG<span class="tag dev">測試素材</span></h3>
+          <dl>
+            <dt>作者</dt>
+            <dd>Jason Auerbach</dd>
+            <dt>授權</dt>
+            <dd>Public domain（Wikimedia Commons 頁面的授權模板為 PD-self；Source／Credit 欄寫 Deonna Hodges）</dd>
+            <dt>來源</dt>
+            <dd><a href="https://commons.wikimedia.org/wiki/File:Human_Hand.JPG">https://commons.wikimedia.org/wiki/File:Human_Hand.JPG</a></dd>
+            <dt>repo 裡的檔案</dt>
+            <dd><code>tests/fixtures/hands/open-palm.jpg</code>（縮小為 640×480）</dd>
+          </dl>
+        </div>
+        <div class="item">
+          <h3>File:Pinch-01.jpg<span class="tag dev">測試素材</span></h3>
+          <dl>
+            <dt>作者</dt>
+            <dd>Andrew Pertsev（Commons 頁面標為作者自己的作品）</dd>
+            <dt>授權</dt>
+            <dd>CC0 1.0（<a href="https://creativecommons.org/publicdomain/zero/1.0/">https://creativecommons.org/publicdomain/zero/1.0/</a>）</dd>
+            <dt>來源</dt>
+            <dd><a href="https://commons.wikimedia.org/wiki/File:Pinch-01.jpg">https://commons.wikimedia.org/wiki/File:Pinch-01.jpg</a></dd>
+            <dt>repo 裡的檔案</dt>
+            <dd><code>tests/fixtures/hands/pinch.jpg</code>（縮小為 640×360）</dd>
+          </dl>
+        </div>
+      </section>
+
+      <section id="review">
+        <h2>6. 素材來源與待核</h2>
+        <h3>已確認</h3>
+        <ul>
+          <li><code>public/</code> 裡沒有圖片、音效、字型或 3D 模型檔，只有 HTML、CSS 和 JavaScript。</li>
+          <li>音效：<code>public/sfx.mjs</code> 用 Web Audio 在瀏覽器裡即時合成（振盪器與雜訊），沒有音檔。</li>
+          <li>字型：只指定裝置內建字型（-apple-system、PingFang TC、Noto Sans TC 等），不下載、也不提供字型檔。</li>
+          <li>場景與零件的 3D 形狀都由 three.js 程式碼產生；VR 手把模型除外（見第 3 節）。</li>
+          <li>工具箱縮圖（<code>examples/starter/thumbs/</code> 與執行時產生的 <code>/thumbs/</code>）：伺服器用 Chromium 把零件程式畫出來的 192×192 截圖。</li>
+          <li><code>examples/starter</code>（新工坊第一次啟動時複製進去的範例工具箱與世界模組）：<code>library.json</code>、<code>worlds.json</code> 裡附有原始中文指令（prompt）的零件與世界模組，是由 Codex 依玩家指令生成的 three.js 程式碼；兩個 <code>c_</code> 開頭的組合零件，是在工坊裡用這些零件組起來的。</li>
+          <li>「能量槍」（<code>p_vwblaster01</code>）與「標靶」（<code>p_vwtarget01</code>）沒有指令紀錄：程式碼與 <code>fabricator/examples</code> 的 blaster-tool、target-prop 相同，隨開發 commit 加入 repo（commit 作者 KaneJU，訊息標有 <code>Co-Authored-By: Claude</code>）。</li>
+          <li><code>fabricator/examples</code>（給 Codex 參考的 9 個範例）：8 個與 <code>examples/starter</code> 的檔案逐字相同；ring-of-parts 只差一行（用零件名稱而不是 id 叫出零件）。</li>
+        </ul>
+        <h3>尚待確認 <span class="tag todo">待核</span></h3>
+        <ol class="todo-list">
+          <li>AI 生成內容：上面由 Codex 依玩家指令生成的零件與世界模組，以及隨開發 commit 加入、標有 AI 共同作者的程式，本頁只陳述產生方式，不對權利歸屬下結論。</li>
+          <li>他人作品名稱：介面文字、說明與部分範例的名稱或指令提到他人作品（例如《薩爾達傳說：王國之淚》與「究極手」「左納烏」等用語、「鋼鐵人」）。這些名稱屬於各自的權利人；用語是否調整，待核。</li>
+          <li>VR 手把模型：從 CDN 載入，版本範圍 <code>@1.0</code> 沒有鎖定；是否改成固定版本並由本伺服器提供，待核。</li>
+          <li>WebAssembly 內的下游函式庫：Rapier 與 MediaPipe 的 <code>.wasm</code> 由各自的原始碼（連同其他開源函式庫）編譯而成，npm 套件沒有逐項附上這些函式庫的聲明；是否需要補列，待核。</li>
+          <li><code>tests/fixtures/photo-gps.jpg</code>（「照照片做」功能的測試圖：簡單的杯子圖形，EXIF 相機欄位為 TestCam／Fixture 1）：repo 裡找不到產生它的腳本，來源待核；不隨遊戲提供。</li>
+        </ol>
+      </section>
+
+      <section id="texts">
+        <h2>7. 授權條文全文</h2>
+        <h3 id="mit-three">7.1 MIT License（three.js）</h3>
+        <p>逐字取自 <code>node_modules/three/LICENSE</code>。本專案自己的 MIT 條文見第 1 節。</p>
+        <pre id="license-three">
+The MIT License
+
+Copyright © 2010-2026 three.js authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+</pre>
+        <h3 id="apache-2">7.2 Apache License 2.0</h3>
+        <p>適用於 Rapier、MediaPipe Tasks Vision、Hand Landmarker 模型（以及開發用的 Playwright、webxr-layers-polyfill）；各元件自己的 copyright／NOTICE 見第 3、4 節。以下逐字取自 <code>node_modules/webxr-layers-polyfill/LICENSE</code>，內容與 Apache 軟體基金會發布的 <a href="https://www.apache.org/licenses/LICENSE-2.0.txt">LICENSE-2.0.txt</a> 相同；附錄中的 <code>[yyyy]</code>、<code>[name of copyright owner]</code> 是原文本來的範本欄位。</p>
+        <pre id="license-apache">
+
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.</pre>
+      </section>
+
+      <footer>
+        <a class="home-link" href="/">回首頁</a>
+        <p>© 2026 KaneJU · Vibe 工坊 · MIT 授權</p>
+      </footer>
+    </main>
+  </body>
+</html>

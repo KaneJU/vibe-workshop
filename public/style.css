@@ -404,3 +404,10 @@ body.mode-game .ctl-hint { bottom: calc(250px + env(safe-area-inset-bottom)); }
 /* 結算剛跳出來的 0.8 秒按鈕不吃點按（game.mjs guardCard），按鈕淡淡亮起來表示可以按了 */
 #gameCardBtns { transition: opacity 0.25s; }
 #gameCard.guard #gameCardBtns { pointer-events: none; opacity: 0.5; }
+/* 版權標示＋授權頁連結：首頁卡片最下面、工坊「操作說明」最下面（在卡片裡排版，不疊在按鈕上） */
+.legal-line { font-size: 12px; line-height: 1.5; color: var(--muted); text-align: center; }
+.legal-line a { display: inline-block; padding: 6px 2px; color: var(--cyan); text-decoration: underline; text-underline-offset: 2px; }
+.title-card .legal-line { margin-top: -6px; }
+#help .legal-line { margin-top: 10px; }
+/* 操作說明比手機畫面高：卡片自己捲動，最下面的「知道了」和授權連結才點得到 */
+#help .card { max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
