@@ -79,7 +79,10 @@
 
     <footer class="hud bottom">
       <label id="modifyWrap" class="chip" hidden><input type="checkbox" id="modifyChk" /> 改造選取的物件</label>
+      <span id="photoChip" class="chip" hidden><img alt="附上的照片" /><button type="button" class="photo-x" title="拿掉照片">×</button></span>
       <input id="prompt" placeholder="說或打：給我一個發光的方塊、把這裡變成月球…（按 / 開始輸入）" autocomplete="off" />
+      <button id="photoBtn" class="round" title="從相簿選一張照片，叫 Codex 照著做">📷</button>
+      <input id="photoInput" type="file" accept="image/*" hidden />
       <button id="micBtn" class="round" title="語音輸入">🎙</button>
       <button id="sendBtn" class="primary">打造</button>
     </footer>
@@ -157,6 +160,7 @@
           <li><b>時光倒轉：</b>選一個剛剛動過的東西按「⏪ 倒轉」（電腦按 T），它會沿著原路退回去</li>
           <li><b>調：</b>Q / E 旋轉、R / F 放大縮小、Delete 刪除、⌘D 複製、⌘Z 復原</li>
           <li><b>打造：</b>在下方說或打你要什麼，按「打造」或 Enter；🎙 是語音</li>
+          <li><b>照照片做：</b>按輸入框旁的 📷，從相簿挑一張照片（手機也可以直接拍），按「打造」；想補充就打幾個字，例如「做成玩具大小」。送出前會先縮小、拿掉照片裡的拍攝地點</li>
           <li><b>改造：</b>選一個 AI 做的物件，勾「改造選取的物件」，再說要怎麼改</li>
           <li><b>組合：</b>選好幾個疊好的物件，按「存成零件」（或按 G），它就進工具箱</li>
           <li><b>套層：</b>工具箱裡的零件可以當材料：「用砲台在我周圍排一圈」</li>

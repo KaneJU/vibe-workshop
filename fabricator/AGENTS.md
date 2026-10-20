@@ -218,6 +218,25 @@ or drives the whole thing with the joystick. Declare it in meta.json: `"device":
 - `modify` — `base_part.js` contains the selected part's code. Write a FULL new `part.js` that applies the
   requested change and keeps everything else. Keep the same name unless the request renames it.
 
+## Photos
+
+When `context.json` has `"photo": "reference.jpg"`, the user picked a photo from their album (it is also attached to
+your first message; open it again with your image viewer whenever you need). The words say what to do with it;
+"照這張照片做出來" alone means: build the main subject of the photo.
+
+- Look first: name the subject and list what makes it recognizable — silhouette, proportions, the main colors,
+  distinctive details (a logo shape, stripes, a handle, ears, wheels).
+- Real size: estimate it from what the object is (a mug ≈ 0.1 m tall, a chair ≈ 0.9 m, a dog ≈ 0.5 m, a car ≈ 4.5 m
+  long), not from the photo's pixels. The user's words override.
+- The photo can't be used as a texture (no external images): rebuild patterns and printed details with geometry and
+  colors. Pick colors from the photo, slightly cleaned up.
+- A place or a landscape that the user wants to be in ("把這裡變成這張照片") → an environment, not a part.
+- People and pets: a friendly stylized figure with their clothes, colors, hairstyle or fur pattern and pose — not a
+  realistic likeness.
+- Several things in the photo: build the main one, unless the words ask for more.
+- After `node snapshot.mjs`, open snapshot.png and reference.jpg and compare shape, proportions and colors; fix the
+  biggest difference (at most two extra rounds).
+
 ## Building from existing parts ("stack and generate")
 
 When the user refers to parts in the library (by name) or to the selection, build the new part OUT OF

@@ -37,6 +37,8 @@ const THUMBS_DIR = path.join(DATA_DIR, 'thumbs'); // 工具箱縮圖
 const MAX_CONCURRENT = 2;
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const BUSY_WAITS_MS = [30_000, 60_000]; // OpenAI 回「太忙」時，等多久再自動重跑（最多兩次）
+const MAX_PHOTO_BYTES = 3 * 1024 * 1024; // 「照照片做」的照片（瀏覽器已經縮到 1280 px）
+const PHOTO_PROMPT = '照這張照片做出來'; // 只附照片、沒打字時的指令
 
 await fs.mkdir(PARTS_DIR, { recursive: true });
 await fs.mkdir(WORLD_DIR, { recursive: true });
@@ -269,6 +271,7 @@ function publicJob(job) {
     error: job.error,
     warnings: job.warnings,
     stats: { validateRuns: job.validateRuns || 0, snapshots: job.snapshots || 0, attempts: job.attempts || 0 },
+    photo: !!job.hasPhoto,
   };
 }
 
@@ -321,6 +324,7 @@ function buildContext(job) {
       ...(p.device ? { device: p.device } : {}),
     })),
     base_part: job.mode === 'modify' ? 'base_part.js' : null,
+    photo: job.hasPhoto ? 'reference.jpg' : null, // 使用者附的照片（也附在第一則訊息裡）
     physics: { enabled: scene.physics !== false }, // 工坊的物理引擎有沒有開
     world: worldSummary(),
     paths: {
@@ -356,7 +360,12 @@ function taskPrompt(job, retryErrors = null) {
     modeLine,
     `Read context.json. First decide whether this is a part, an environment or a rule (see AGENTS.md), and open the closest example in examples/.`,
     `Write part.js or world.js plus meta.json in this directory, then run \`node validate.mjs\` and fix until it prints PASS.`,
-    `Then run \`node snapshot.mjs\` and look at snapshot.png with your image viewer before you finish.`,
+    ...(job.hasPhoto
+      ? [
+          `The user attached a photo (reference.jpg, also attached to this message). Build what it shows — see "Photos" in AGENTS.md.`,
+          `Then run \`node snapshot.mjs\`, open snapshot.png and reference.jpg with your image viewer and compare them before you finish.`,
+        ]
+      : [`Then run \`node snapshot.mjs\` and look at snapshot.png with your image viewer before you finish.`]),
     ...(retryErrors
       ? [
           `A previous attempt in this directory did not pass the final check: ${retryErrors}`,
@@ -396,6 +405,8 @@ function summarizeEvent(ev) {
 
 function runCodex(job, dir, retryErrors = null) {
   const args = ['exec', '--skip-git-repo-check', '--ephemeral', '-s', 'workspace-write', '-C', dir, '--json'];
+  // -i 可以接好幾張圖：放在其他選項前面，後面的任務單才不會被當成第二張圖
+  if (job.hasPhoto) args.splice(1, 0, '-i', path.join(dir, 'reference.jpg'));
   if (CODEX_MODEL) args.push('-m', CODEX_MODEL);
   args.push('-o', path.join(dir, 'last-message.txt'), taskPrompt(job, retryErrors));
   return new Promise((resolve, reject) => {
@@ -479,6 +490,10 @@ async function runJob(job) {
   await fs.cp(path.join(ROOT, 'fabricator', 'examples'), path.join(dir, 'examples'), { recursive: true });
   if (job.mode === 'modify') {
     await fs.copyFile(path.join(PARTS_DIR, `${job.basePartId}.js`), path.join(dir, 'base_part.js'));
+  }
+  if (job.photo) {
+    await fs.writeFile(path.join(dir, 'reference.jpg'), job.photo);
+    job.photo = null;
   }
   const ctxData = buildContext(job);
   const activeIds = [ctxData.world.environment?.id, ...ctxData.world.rules.map((r) => r.id)].filter(Boolean);
@@ -658,6 +673,30 @@ async function serveFile(res, baseDir, rel, cache = 'no-cache') {
   }
 }
 
+// 「照照片做」：只收 JPEG（瀏覽器已經縮小、重新編碼過），存檔前再拿掉 EXIF／XMP 這類附帶資訊（裡面可能有拍攝地點）
+function photoFromBody(image) {
+  const m = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(String(image));
+  if (!m) return { error: '照片要是 JPEG 格式' };
+  const buf = Buffer.from(m[1], 'base64');
+  if (buf.length > MAX_PHOTO_BYTES) return { error: '照片太大了（上限 3 MB）' };
+  if (buf.length < 200 || buf[0] !== 0xff || buf[1] !== 0xd8) return { error: '照片格式不對' };
+  return { buf: stripJpegMetadata(buf) };
+}
+function stripJpegMetadata(buf) {
+  const out = [buf.subarray(0, 2)];
+  let i = 2;
+  while (i + 4 <= buf.length && buf[i] === 0xff) {
+    const marker = buf[i + 1];
+    if (marker === 0xda) break; // 影像資料開始，後面原樣保留
+    const end = i + 2 + buf.readUInt16BE(i + 2);
+    // APP1（EXIF、XMP）、APP13（IPTC）、COM（註解）不要；其他（色彩表、APP0、ICC）保留
+    if (marker !== 0xe1 && marker !== 0xed && marker !== 0xfe) out.push(buf.subarray(i, end));
+    i = end;
+  }
+  out.push(buf.subarray(i));
+  return Buffer.concat(out);
+}
+
 function readBody(req, limit = 2 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -750,8 +789,19 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'POST' && p === '/api/generate') {
-    const body = await readBody(req);
-    const prompt = String(body.prompt || '').trim().slice(0, 1000);
+    let body;
+    try {
+      body = await readBody(req, 8 * 1024 * 1024);
+    } catch (e) {
+      return send(res, 413, { error: /too large/.test(e.message) ? '照片太大了，換一張小一點的' : e.message });
+    }
+    let photo = null;
+    if (body.image != null) {
+      const r = photoFromBody(body.image);
+      if (r.error) return send(res, 400, { error: r.error });
+      photo = r.buf;
+    }
+    const prompt = String(body.prompt || '').trim().slice(0, 1000) || (photo ? PHOTO_PROMPT : '');
     if (!prompt) return send(res, 400, { error: '請說要打造什麼' });
     const mode = body.mode === 'modify' ? 'modify' : 'create';
     const base = mode === 'modify' ? partById(body.basePartId) : null;
@@ -776,6 +826,8 @@ async function handleApi(req, res, url) {
       error: null,
       warnings: [],
       proc: null,
+      photo, // 開工時寫成工作資料夾裡的 reference.jpg，之後就丟掉（不留在記憶體）
+      hasPhoto: !!photo,
     };
     enqueue(job);
     return send(res, 200, { job: publicJob(job) });
@@ -795,6 +847,7 @@ async function handleApi(req, res, url) {
     if (job.status === 'queued' || job.status === 'running') {
       job.status = 'cancelled';
       job.finishedAt = Date.now();
+      job.photo = null;
       addLog(job, '🛑 已取消');
       job.proc?.kill('SIGTERM');
     }

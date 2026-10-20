@@ -1172,10 +1172,12 @@ function handleLocalCommand(t) {
 }
 
 async function submitPrompt(raw) {
+  const photo = photoData;
+  // 只附照片、沒打字也可以：伺服器會當成「照這張照片做出來」
   const text = String(raw || '').trim();
-  if (!text) return;
+  if (!text && !photo) return;
   $('#prompt').value = '';
-  if (handleLocalCommand(text)) return;
+  if (!photo && handleLocalCommand(text)) return;
   const sel = selectedInstances();
   const modify = $('#modifyChk').checked && sel.length === 1 && partKind(sel[0].partId) === 'generated';
   const body = {
@@ -1185,13 +1187,16 @@ async function submitPrompt(raw) {
     selection: sel.map(describeInstance),
     scene: sceneSummary(),
     player: player.position.toArray().map(r3),
+    ...(photo ? { image: photo } : {}),
   };
   let res;
   try {
     res = await api('POST', '/api/generate', body);
   } catch (e) {
+    if (text) $('#prompt').value = text; // 送不出去：字和照片都留著，可以再按一次
     return toast(`⚠️ ${e.message}`);
   }
+  if (photo) setPhoto(null);
   const ctx = {
     job: res.job,
     modify,
@@ -1199,7 +1204,7 @@ async function submitPrompt(raw) {
     selectionIds: sel.map((i) => i.id),
     anchorId: sel[0]?.id || null,
     holo: createHologram(modify ? sel[0] : null),
-    card: createJobCard(res.job),
+    card: createJobCard(res.job, photo),
   };
   pendingJobs.set(res.job.id, ctx);
   if (isTouch) {
@@ -1256,7 +1261,7 @@ function removeHologram(g) {
   disposeObject(g);
 }
 
-function createJobCard(job) {
+function createJobCard(job, photo = null) {
   const jobsEl = $('#jobs');
   if (jobsEl.querySelector(':scope > .muted')) jobsEl.innerHTML = '';
   const el = document.createElement('div');
@@ -1264,7 +1269,11 @@ function createJobCard(job) {
   el.innerHTML =
     '<div class="jtitle"></div><div class="jline">準備中…</div><div class="jerr" hidden></div>' +
     '<button class="jcancel">取消</button>';
-  el.querySelector('.jtitle').textContent = `${job.mode === 'modify' ? '改造：' : ''}「${job.prompt}」`;
+  el.querySelector('.jtitle').textContent = `${photo ? '📷 ' : ''}${job.mode === 'modify' ? '改造：' : ''}「${job.prompt}」`;
+  if (photo) {
+    addThumb(el, photo); // 做好之前先顯示照片，做好後換成成品的縮圖
+    el._photo = photo; // 「再試一次」要帶同一張照片
+  }
   el.querySelector('.jcancel').onclick = () =>
     api('POST', `/api/jobs/${job.id}/cancel`, {}).catch((e) => toast(e.message));
   jobsEl.prepend(el);
@@ -1289,14 +1298,22 @@ function updateJobCard(card, job) {
     err.textContent = job.error || '';
   }
   const made = job.part || job.module;
-  if (job.status === 'done' && made?.thumb && !card.querySelector('.thumb')) addThumb(card, `/thumbs/${made.id}.jpg`);
+  if (job.status === 'done' && made?.thumb && !card.dataset.made) {
+    card.dataset.made = '1';
+    const t = card.querySelector('.thumb');
+    if (t) t.src = `/thumbs/${made.id}.jpg`;
+    else addThumb(card, `/thumbs/${made.id}.jpg`);
+  }
   if (['done', 'error', 'cancelled'].includes(job.status)) {
     card.querySelector('.jcancel')?.remove();
     if (job.status !== 'done' && !card.querySelector('.jretry')) {
       const retry = document.createElement('button');
       retry.className = 'jretry';
       retry.textContent = '再試一次';
-      retry.onclick = () => submitPrompt(job.prompt);
+      retry.onclick = () => {
+        if (card._photo) setPhoto(card._photo);
+        submitPrompt(job.prompt);
+      };
       card.appendChild(retry);
     }
   }
@@ -1516,6 +1533,47 @@ $('#micBtn').onclick = () => {
   recog.start();
   $('#micBtn').classList.add('on');
 };
+
+// ---------------- 照片：從相簿挑一張，叫 Codex 照著做 ----------------
+
+let photoData = null; // 縮到 1280 px、重新編碼過的 JPEG（data URL）
+let promptHint = null;
+const PHOTO_MAX = 1280;
+function setPhoto(data) {
+  photoData = data;
+  const chip = $('#photoChip');
+  chip.hidden = !data;
+  chip.querySelector('img').src = data || '';
+  promptHint ??= $('#prompt').placeholder;
+  $('#prompt').placeholder = data ? '要做成什麼？可以不寫，直接按打造' : promptHint;
+}
+async function loadPhoto(file) {
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const k = Math.min(1, PHOTO_MAX / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(img.naturalWidth * k));
+    c.height = Math.max(1, Math.round(img.naturalHeight * k));
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    // 重新畫一次再存成 JPEG：照片裡的拍攝地點、相機資訊不會跟著送出去
+    setPhoto(c.toDataURL('image/jpeg', 0.85));
+    if (!isTouch) $('#prompt').focus();
+  } catch {
+    toast('⚠️ 這張照片讀不了，換一張試試');
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+$('#photoBtn').onclick = () => $('#photoInput').click();
+$('#photoInput').onchange = (e) => {
+  loadPhoto(e.target.files?.[0]);
+  e.target.value = ''; // 同一張再選一次也會觸發
+};
+$('#photoChip .photo-x').onclick = () => setPhoto(null);
 
 // ---------------- VR ----------------
 

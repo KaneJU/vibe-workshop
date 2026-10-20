@@ -21,6 +21,7 @@
     "test:physics": "node tests/physics.mjs",
     "test:examples": "node tests/examples.mjs",
     "test:xr": "node tests/xr.mjs",
+    "test:photo": "node tests/photo.mjs",
     "bench": "node tests/bench.mjs"
   },
   "dependencies": {

@@ -17,6 +17,7 @@ No page reloads, no rebuilds — you never leave the world.
 - **Modify in place** — select an AI-made object and say *"make it red"*; the new version replaces it where it stands.
 - **Change the world itself** — say *"turn this into the surface of the moon"* or *"add gravity"*: Codex writes an environment or a rule and swaps it into the running world. Even the driving engine can be retuned by a rule (*"make the car faster and let it drift"*).
 - **Real physics, borrowed from Zelda: Tears of the Kingdom** — things fall, tumble and get knocked over. Grab them with Ultrahand, throw them, glue them into contraptions, add fans, wheels, balloons and rockets, drive what you built, and send things back with Recall.
+- **Build from a photo** — tap 📷, pick a photo from your album (or take one) and press Build; add a few words if you like ("make it toy-sized"). The phone shrinks the photo and drops its location data before sending; Codex builds the main subject and compares its result with the photo.
 - **The AI checks its own work** — before handing a part over, Codex looks at four rendered views of it, the validator flags made-up APIs, and devices get a real test drive in the physics engine. Every toolbox part gets a thumbnail.
 - **Drive, fly and wear what you build** — select an object and press ▶ 操作 [operate]: cars drive, flying cars fly, gloves go on your hand. Phones get a thumb joystick and an ⚡ action button; computers use WASD and Space.
 - **Everything persists** — the scene and the toolbox are saved automatically; close the tab and come back later.
@@ -35,7 +36,7 @@ Every request becomes a small job folder with six ingredients:
 | 1 | Task prompt (`taskPrompt()` in [`server.mjs`](server.mjs)) | A few lines: what the user said, create or modify, "open the closest example, write `part.js` + `meta.json`, run the validator until PASS, then look at the snapshot". |
 | 2 | [`fabricator/AGENTS.md`](fabricator/AGENTS.md) | The spec: meters, origin at the bottom center, front faces +Z, the `ctx` API, animation hooks, physics and devices, budgets, forbidden APIs, placement rules. |
 | 3 | [`fabricator/examples/`](fabricator/examples) | Seven working modules (a car, a glove, a fan device, a ring built from an existing part, an environment, two rules). Codex opens the closest one first. A test keeps them passing. |
-| 4 | `context.json` | The user's words, the selection and nearby objects — with what each one *is* (description, drivable, device, animated, glued) — the player's position, and every toolbox part with its size. |
+| 4 | `context.json` | The user's words, the selection and nearby objects — with what each one *is* (description, drivable, device, animated, glued) — the player's position, every toolbox part with its size, and the photo if you attached one (`reference.jpg`, also handed to Codex with the request). |
 | 5 | [`fabricator/validate.mjs`](fabricator/validate.mjs) | Really builds the part in Node and runs 90 animation frames; checks size, grounding, budgets and forbidden APIs; fails on made-up `ctx` / `world` members; warns about leftover TODOs and empty hooks; drops the part on a floor; and test-drives devices in the real physics engine (does the fan push, the balloon rise, a jetpack glued to a raft lift it without flipping, a cart on four of these wheels drive?). 10-second watchdog. |
 | 6 | [`fabricator/snapshot.mjs`](fabricator/snapshot.mjs) | "Look at your work": the server renders four views (front, side, top, 3/4) into `snapshot.png` and Codex opens it with its image viewer to check the result against the request. Codex's sandbox can't run a browser, so the job folder and the server pass notes. |
 
@@ -216,6 +217,7 @@ npm run test:control     # iPhone: drive, switch to fly, wear, chooser, snap; pl
 npm run test:world       # iPhone: moon, gravity, drift, error isolation, rollback, slow-module watchdog, safe mode
 npm run test:physics     # iPhone: fall and stack, Ultrahand, glue, shake off, fan, balloon, cart with a steering stick, Recall, gravity rule, reload
 npm run test:xr          # VR on an emulated Quest 3 (IWER): controller grab, follow, wrist turn, release, hand pinch — physics on and off
+npm run test:photo       # 📷 from an iPhone on the LAN: shrunk, location data removed, attached to Codex (starts its own server with a fake Codex)
 npm run test:examples    # every example in fabricator/examples passes the real validator (no server needed)
 WITH_CODEX=1 npm run bench   # fixed prompts (SET=hard: drive, fly, wear, devices, rules): success, time, validator rounds, a snapshot, and a try-out of every result with today's validator and ⚡ (uses Codex quota)
 WITH_CODEX=1 npm test    # also runs a real build and modification (uses Codex quota)
@@ -248,6 +250,7 @@ tests/                  Playwright tests (desktop and phone)
 
 - The in-app UI is in Traditional Chinese for now.
 - VR mode is tested on an emulated Quest 3 (grab, move, turn, release, hand pinch), not yet on a real headset, and you can't talk to build inside VR yet.
+- A photo you attach goes to OpenAI as part of the Codex request, like your words; a copy stays in the job folder on your Mac (`jobs/`, not in git).
 - Headsets need HTTPS for WebXR, and browsers need HTTPS for the web microphone. Over plain LAN http, use the phone keyboard's dictation instead.
 - The AI looks at four still pictures of what it built; it doesn't watch animations or try the controls visually yet. Thumbnails and snapshots need Playwright's Chromium (`npx playwright install chromium`); without it everything else still works.
 - Collision shapes are convex hulls: a table's legs and top collide as one solid block. Things made of several sub-parts (or glued together) keep their real shape.
