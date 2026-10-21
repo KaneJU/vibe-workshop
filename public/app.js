@@ -1761,6 +1761,7 @@ const headset = createHeadset({
   camera,
   controls,
   phys,
+  mode: MODE,
   pick(origin, dir) {
     raycaster.ray.origin.copy(origin);
     raycaster.ray.direction.copy(dir);
@@ -1803,10 +1804,22 @@ const headset = createHeadset({
     },
     afterRelease: () => scheduleSave(),
     nameOf: (inst) => inst.name || partName(inst.partId),
-    // 創作世界：捏＝點那個實體（作品自己決定要做什麼）；點一下螢幕＝開始／結束說話（要使用者手勢才能開麥克風）
+    // 創作世界：捏＝點那個實體（作品自己決定要做什麼）；點一下螢幕＝開始／結束說話（點螢幕是使用者手勢，才開得了麥克風）
     onPinch: (hover) => creation?.pinch(hover) ?? false,
-    onTap: () => (creation ? (creation.toggleVoice(), true) : false),
+    onTap: () => (creation ? (creation.toggleVoice({ gesture: true }), true) : false),
     extraLines: () => creation?.headsetLines() ?? null,
+    // 創作世界的選單頁（新作品、改選取的、說話、取消、子世界、回上一層、放作品、退回上一版…）、方向鍵、模式牌
+    menu: (page, opts) => creation?.headsetMenu(page, opts) ?? null,
+    onMenu: (id) => creation?.headsetAction(id) ?? null,
+    padAvailable: () => !!creation,
+    onKey: (k, down) => (down ? creation?.pressKey(k) : creation?.releaseKey(k)),
+    keyHeld: (k) => !!creation?.keyHeld(k),
+    releaseKeys: (why) => creation?.releaseAllKeys(why),
+    onSuspend: (why) => creation?.onSuspend(why),
+    modeLine: () => creation?.headsetMode() ?? null,
+    gameLines: () => creation?.headsetGame() ?? null,
+    connectorStatus: () => creation?.connectorStatus() ?? Promise.resolve(null),
+    voiceStats: () => creation?.voice.stats() ?? null,
   },
 });
 const hsBtn = $('#hsBtn');

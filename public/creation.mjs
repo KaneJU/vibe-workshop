@@ -2,7 +2,11 @@
 // - 作品只在 sandbox iframe 的 Worker 裡跑（sandbox-host.mjs），這頁只收資料（要畫什麼、HUD）
 // - 世界可以一層一層往下開（傳送門），只有目前這一層在執行；進入子世界前先存檔、停掉這層，返回時從存檔恢復
 // - 換版不重新整理：新版先用「舊版目前的存檔」在影子實例試跑 → 同一格切換 → 觀察 3 秒，出錯就退回舊版和切換當下的狀態
-// - 說話時就記下「哪個世界、選了誰、要改哪一版」，說到一半換世界也不會改錯東西
+// - 說話時就記下「哪個世界、選了誰、要改哪一版、新作品還是修改」，說到一半換世界、換選取也不會改錯東西
+// - 「新作品」「改選取的」是明確的模式：選了東西不會自己變成修改；改選別的作品就回到新作品（要改它再按一次「改」），
+//   模式牌、按鈕、眼鏡 HUD 一直寫著「現在說話會做什麼」
+// - 離開眼鏡模式、切到背景、按取消：正在說的那句當場丟掉，回來不會補送；按著的方向鍵全部放開
+// - 接手、只看的同步重建這一層時也標「載入中」（state().loading），完成後才開始照按鍵動
 // 規格：docs/creation-sdk.md
 import { createSandboxHost } from './sandbox-host.mjs';
 import { createVoice } from './voice.mjs';
@@ -32,6 +36,7 @@ body.mode-create .panel, body.mode-create footer.hud.bottom, body.mode-create #m
 #cBar input { flex: 1; min-width: 0; font: inherit; font-size: 16px; color: #e6f7ff; background: #071420; border: 1px solid rgba(56,225,255,.3); border-radius: 10px; padding: 9px 10px; }
 #cBar #cMic.on { background: #b5361b; border-color: #ff8a6b; }
 #cMode { white-space: nowrap; }
+#cMode.modify { background: #5a4510; border-color: #ffd166; color: #fff3c2; }
 #cJob { position: fixed; left: 10px; right: 10px; bottom: calc(70px + env(safe-area-inset-bottom)); display: flex; gap: 8px; align-items: center; background: rgba(8,22,34,.92); border: 1px solid rgba(255,209,102,.45); border-radius: 12px; padding: 8px 12px; }
 #cJob[hidden] { display: none; }
 #cJob .txt { flex: 1; white-space: pre-line; }
@@ -75,9 +80,12 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   let lastSave = 0;
   let saving = null;
   let busy = false; // 進出世界中
+  let loadingWhy = null; // 接手（takeover）、只看的同步重建（resync）：整層重建中
+  let loadingSince = 0;
+  let rebuildChain = Promise.resolve(); // 整層重建一次只做一個（接手和同步不會同時重建、重複生出實例）
   const keys = { left: false, right: false, up: false, down: false, action: false };
   const tappedAt = { left: -1e9, right: -1e9, up: -1e9, down: -1e9, action: -1e9 }; // 按下的時間：快速點按也至少算按住 120 ms（沙盒忙的那一步不會吃掉）
-  const stats = { swaps: 0, rejected: 0, rollbacks: 0, enters: 0, saves: 0, conflicts: 0, placed: 0, resyncs: 0, merges: 0, takeovers: 0, handovers: 0, demotions: 0, reconnects: 0 };
+  const stats = { swaps: 0, rejected: 0, rollbacks: 0, reverts: 0, enters: 0, saves: 0, conflicts: 0, placed: 0, resyncs: 0, merges: 0, takeovers: 0, handovers: 0, demotions: 0, reconnects: 0, keyReleases: {}, voiceDropped: {}, ignoredWhileLoading: 0, loadings: {} };
   // 多分頁／多瀏覽器同一層：只有「執行者」（拿到 lease 的分頁）在跑作品、存檔；其他的「只看」，跟著伺服器的存檔同步。
   // 要動手（點、按鍵、放作品、換版）就先接手；執行者斷線，lease 到期後別人可以接手。所有變動靠伺服器的 SSE 通知。
   const clientId = uid('tab'); // 每次開頁面一個（複製分頁不會共用）
@@ -160,7 +168,9 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     const parts = (world?.path || []).map((p, i, a) => `<span class="crumb">${i === a.length - 1 ? '📍 ' : ''}${esc(p.name)}</span>`).join('<span>›</span>');
     const roleTxt = role === 'leader' ? (followers > 1 ? `▶ 這個分頁在執行（另有 ${followers - 1} 個在看）` : '') : role === 'follower' ? '👀 只看：這一層正由另一個分頁執行——點作品、按方向鍵或放作品就接手' : '';
     // 進入／返回途中（作品還沒全部起來）：「回上一層」先停用並標「載入中」，不會按了沒反應
-    c.innerHTML = `${world?.parentId ? `<button id="cUp" class="primary"${busy ? ' disabled' : ''}>⬑ 回上一層</button>` : ''}${parts}<span class="crumb">第 ${world?.depth ?? 0} 層</span>${busy ? '<span class="crumb">⏳ 載入中…</span>' : ''}${roleTxt ? `<span class="crumb" id="cRole">${esc(roleTxt)}</span>` : ''}${connState === 'reconnecting' ? '<span class="crumb">⚠️ 連線中斷，重新連線中…</span>' : ''}`;
+    // 接手：一開始就標；只看的同步重建很快，超過 250 ms 才標（不然每次同步都會閃一下）
+    const loadTxt = busy ? '⏳ 載入中…' : loadingWhy === 'takeover' ? '⏳ 接手中…（完成後才會照你的按鍵動）' : loadingWhy === 'resync' && performance.now() - loadingSince > 250 ? '⏳ 同步中…' : '';
+    c.innerHTML = `${world?.parentId ? `<button id="cUp" class="primary"${busy ? ' disabled' : ''}>⬑ 回上一層</button>` : ''}${parts}<span class="crumb">第 ${world?.depth ?? 0} 層</span>${loadTxt ? `<span class="crumb" id="cLoading">${loadTxt}</span>` : ''}${roleTxt ? `<span class="crumb" id="cRole">${esc(roleTxt)}</span>` : ''}${connState === 'reconnecting' ? '<span class="crumb">⚠️ 連線中斷，重新連線中…</span>' : ''}`;
     c.querySelector('#cUp')?.addEventListener('click', () => goUp());
     c.querySelector('#cRole')?.addEventListener('click', () => role === 'follower' && ensureLeader());
   }
@@ -183,6 +193,12 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   function renderPortals() {
     $('#cPortals').innerHTML = (world?.portals || []).map((p) => `<div class="lin"><span>🌀 ${esc(p.name)}</span><button data-enter="${p.world}">進入</button></div>`).join('') || '這層還沒有子世界';
     $('#cPortals').querySelectorAll('[data-enter]').forEach((b) => b.addEventListener('click', () => enter(b.dataset.enter)));
+  }
+  let connAt = 0;
+  function refreshConnectorSoon() {
+    if (performance.now() - connAt < 3000) return;
+    connAt = performance.now();
+    refreshConnector();
   }
   async function refreshConnector() {
     try {
@@ -256,23 +272,41 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     }
     world.items.push(item);
     await spawnItem(item, { fresh: true });
-    select(item.id);
+    if (mode !== 'modify') select(item.id); // 正在改別的作品：不搶走選取（模式不會被悄悄換掉）
     stats.placed += 1;
     await saveWorld();
     return item.id;
   }
+  // 選取只決定「點到誰、HUD 看誰」，不會自己變成修改；正在改 A 時改選 B（或取消選取）→ 回到新作品，要改 B 再按一次「改」
   function select(id) {
-    selected = id && live.has(id) ? id : null;
+    const next = id && live.has(id) ? id : null;
+    const changed = next !== selected;
+    selected = next;
     const L = selected && live.get(selected);
     selRing.visible = !!L;
     if (L) selRing.position.set(L.item.pos[0], 0.02, L.item.pos[2]);
-    if (!selected && mode === 'modify') setMode('new');
+    if (changed && mode === 'modify') {
+      mode = 'new';
+      if (L) toast(`改選了「${L.name}」：現在說話會做新作品；要改它，再按「✏️ 改」`);
+    }
+    renderMode();
     renderHud();
   }
   function setMode(m) {
     mode = m === 'modify' && selected ? 'modify' : 'new';
-    $('#cMode').textContent = mode === 'modify' ? `✏️ 改「${live.get(selected)?.name || ''}」` : '✨ 新作品';
+    renderMode();
+    return mode;
   }
+  const modeTarget = () => (mode === 'modify' && selected && live.get(selected)) || null;
+  function renderMode() {
+    const L = modeTarget();
+    const b = $('#cMode');
+    b.textContent = L ? `✏️ 改「${L.name}」v${L.version}` : '✨ 新作品';
+    b.classList.toggle('modify', !!L);
+    $('#cInput').placeholder = L ? `說或打要怎麼改「${L.name}」：例如「改成紅色、跳得更高」` : '說或打你想玩的：例如「做一個會追著我跑的球，被追到就扣分」';
+  }
+  // 一句話開口時記下的目標，寫成人看得懂的字
+  const targetText = (c) => (c?.mode === 'modify' ? `改「${c.targetName || '選取的作品'}」v${c.baseVersion}` : '做新作品');
 
   // ---------------- 世界：進入、返回、存檔 ----------------
   async function saveWorld(reason = 'save') {
@@ -370,6 +404,8 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   async function enter(worldId, { save = true } = {}) {
     if (busy) return;
     busy = true;
+    stats.loadings.enter = (stats.loadings.enter || 0) + 1;
+    releaseAllKeys('enter'); // 換層：按著的鍵放開（新的一層不會一進來就被「按著」）
     renderCrumb();
     await swapChain; // 換版交易做完才離開這一層
     try {
@@ -410,8 +446,11 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   function goUp() {
     if (world?.parentId) enter(world.parentId);
   }
-  async function createChild() {
-    const name = (win.prompt?.('子世界的名字', `${world.name} 的子世界`) || '').trim() || `${world.name} 的子世界`;
+  // ask：要不要跳視窗問名字（眼鏡裡打不了字：用預設名字「第 N 層 M 號」，之後可以在電腦上改）
+  async function createChild({ name = '', ask = true } = {}) {
+    const def = `第${(world.depth ?? 0) + 1}層 ${(world.portals?.length || 0) + 1}號`;
+    const typed = name || (ask ? (win.prompt?.('子世界的名字', def) || '').trim() : '');
+    name = (typed || def).slice(0, 24);
     await saveWorld();
     const pos = [((world.portals.length % 5) - 2) * 2.4, 0, -6];
     // 開子世界＝伺服器在這一層加一個傳送門（直接合併、通知其他分頁；不需要執行權）
@@ -426,15 +465,19 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   }
 
   // ---------------- 創作：說／打 → 自己的 Codex → 換上 ----------------
+  // 開口（或按送出）那一刻的目標：哪一層、選了誰、新作品還是改哪一件的哪一版——之後換層、換選取都不影響這一句
   function captureContext() {
-    const L = selected && live.get(selected);
+    const L = modeTarget();
     return {
       worldId: world.id,
+      worldName: world.name,
       worldRevision: world.revision,
       selected: selected ? [selected] : [],
-      targetLineage: mode === 'modify' && L ? L.lineage : null,
-      baseVersion: mode === 'modify' && L ? L.version : null,
-      targetItem: mode === 'modify' && L ? selected : null,
+      mode: L ? 'modify' : 'new',
+      targetLineage: L ? L.lineage : null,
+      baseVersion: L ? L.version : null,
+      targetItem: L ? selected : null,
+      targetName: L ? L.name : null,
     };
   }
   async function submit(intent, { source = 'text', utteranceId = uid('utt'), context = captureContext() } = {}) {
@@ -442,9 +485,11 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     if (!intent) return null;
     const r = await api('POST', '/api/create', { utteranceId, intent, source, worldId: context.worldId, selected: context.selected, targetLineage: context.targetLineage, baseVersion: context.baseVersion });
     if (!jobs.has(r.job.id)) jobs.set(r.job.id, { job: r.job, context, kind: context.targetLineage ? 'modify' : 'new', utteranceId, done: false });
-    if (!r.connector?.paired) setJobText(`「${intent}」排隊中：還沒連接你自己的 Codex。按右邊「連接我的 Codex」，在你的電腦執行 connector 後就會開始做（不會借用別人的 Codex）`, { cancel: true, warn: true });
-    else if (!r.connector.online) setJobText(`「${intent}」排隊中：你的 connector 沒在跑（在電腦上執行 run）`, { cancel: true, warn: true });
-    else setJobText(`「${intent}」交給你的 Codex 了…`, { cancel: true });
+    if (me && r.connector) me.connector = r.connector;
+    const what = `（${targetText(context)}）`;
+    if (!r.connector?.paired) setJobText(`「${intent}」排隊中${what}：還沒連接你自己的 Codex——在電腦上配對、執行 connector 後就會開始做（不會借用別人的 Codex）`, { cancel: true, warn: true });
+    else if (!r.connector.online) setJobText(`「${intent}」排隊中${what}：你的 connector 沒在跑（在電腦上執行 run）`, { cancel: true, warn: true });
+    else setJobText(`「${intent}」交給你的 Codex 了${what}…`, { cancel: true });
     $('#cInput').value = '';
     pollJobs();
     return r.job;
@@ -465,6 +510,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
           }
           const j = r.job;
           J.job = j;
+          if (me && r.connector) me.connector = r.connector;
           const last = j.messages?.[j.messages.length - 1]?.text || '';
           if (j.status === 'queued') setJobText(`「${j.intent}」排隊中${r.connector?.online ? '' : '（connector 沒在跑）'}${j.diagnostics ? `\n上次的問題：${j.diagnostics[0]}` : ''}`, { cancel: true, warn: !r.connector?.online });
           else if (j.status === 'working') setJobText(`你的 Codex 正在做「${j.intent}」…${last ? `\n${last}` : ''}`, { cancel: true });
@@ -538,13 +584,15 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     return p;
   };
   const groupOf = (hostId) => root.children.find((c) => c.userData.instId === hostId);
-  function swapLineage(lineage, version, J) {
-    return serial(() => doSwap(lineage, version, J));
+  // from：退回上一版用（把這一層 v{from} 的實例一起換回 version；同一筆交易、同樣的影子試跑與觀察期）
+  function swapLineage(lineage, version, J, opts) {
+    return serial(() => doSwap(lineage, version, J, opts));
   }
-  async function doSwap(lineage, version, J) {
+  async function doSwap(lineage, version, J, { from = null } = {}) {
     if (role !== 'leader' && !(await ensureLeader())) return { ok: false, error: '不是這一層的執行者' };
     const w0 = world;
-    const targets = [...live.values()].filter((L) => L.lineage === lineage && L.version < version && !L.broken);
+    const revert = from != null;
+    const targets = [...live.values()].filter((L) => L.lineage === lineage && (revert ? L.version === from : L.version < version) && !L.broken);
     if (!targets.length) return { ok: true, swapped: 0 };
     let newPkg = null;
     const candidates = []; // 已建好的新版候選 hostId
@@ -561,7 +609,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
             pollJobs();
           }
         }, () => {});
-      setJobText(`新版 v${version} ${message}\n舊版照常在玩（全部 ${targets.length} 個都沒換）；已經請你的 Codex 修正`, { warn: true });
+      setJobText(revert ? `退回 v${version} 沒成功：${message}\n現在的 v${from} 照常在玩（全部 ${targets.length} 個都沒換）` : `新版 v${version} ${message}\n舊版照常在玩（全部 ${targets.length} 個都沒換）；已經請你的 Codex 修正`, { warn: true });
       return { ok: false, error: message };
     };
     try {
@@ -614,11 +662,13 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
       L.item.version = version;
     }
     stats.swaps += 1;
+    if (revert) stats.reverts += 1;
     watching.set(lineage, { until: performance.now() + SWAP_WATCH_MS, olds: prepared.map((x) => x.old), newKey: newPkg.key, job: J?.job, version });
     txn = false;
+    renderMode();
     renderHud();
     saveWorld('swap'); // 存檔後伺服器會通知其他分頁：它們跟著換上新版
-    toast(`🔁 ${prepared.length} 個「${newPkg.manifest.name || ''}」一起換上 v${version}（狀態保留）`);
+    toast(revert ? `↶ ${prepared.length} 個「${newPkg.manifest.name || ''}」一起退回 v${version}（狀態保留）` : `🔁 ${prepared.length} 個「${newPkg.manifest.name || ''}」一起換上 v${version}（狀態保留）`);
     return { ok: true, swapped: prepared.length };
   }
   // 觀察期：任何一個新實例出錯 → 這次換上的全部退回舊版（換版當下的存檔、亂數）
@@ -665,6 +715,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
         }
       }, () => {});
     setJobText(`v${w.version} 換上後出錯（${why}），${back.length} 個都已退回 v${w.olds[0]?.version} 和換版當下的狀態`, { warn: true });
+    renderMode();
     renderHud();
     saveWorld();
   }
@@ -720,11 +771,24 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     }
     return promise;
   }
-  // 拿到執行權：用伺服器上最新的存檔（上一個執行者交出的）重建這一層，再開始跑
+  // 整層重建中：state().loading 也是 true；接手一開始就標，只看的同步超過 250 ms 才在畫面上標
+  function setLoading(why) {
+    if (why) stats.loadings[why] = (stats.loadings[why] || 0) + 1;
+    loadingWhy = why;
+    loadingSince = performance.now();
+    renderCrumb();
+    if (why === 'resync') setTimeout(() => loadingWhy === 'resync' && renderCrumb(), 300);
+  }
+  // 拿到執行權：用伺服器上最新的存檔（上一個執行者交出的）重建這一層，再開始跑（重建完才照按鍵動）
   async function becomeLeader() {
     if (role === 'leader') return;
-    const w = (await api('GET', `/api/cworlds/${world.id}`)).world;
-    await reconcile(w, { refreshAll: true });
+    setLoading('takeover');
+    try {
+      const w = (await api('GET', `/api/cworlds/${world.id}`)).world;
+      await reconcile(w, { refreshAll: true });
+    } finally {
+      if (loadingWhy === 'takeover') setLoading(null);
+    }
     role = 'leader';
     stats.takeovers += 1;
     lastSave = performance.now();
@@ -740,6 +804,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     if (role !== 'leader') return;
     role = 'follower';
     stats.demotions += 1;
+    releaseAllKeys('demote');
     renderCrumb();
     if (message) setJobText(message, { warn: true });
     resyncFromServer();
@@ -749,8 +814,14 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     if (!world) return;
     try {
       const w = (await api('GET', `/api/cworlds/${world.id}`)).world;
+      if (role === 'leader') return; // 等的時候已經接手了：接手那邊會重建
       stats.resyncs += 1;
-      await reconcile(w, { refreshAll: true });
+      setLoading('resync');
+      try {
+        await reconcile(w, { refreshAll: true });
+      } finally {
+        if (loadingWhy === 'resync') setLoading(null);
+      }
     } catch {
       /* 下一個事件再試 */
     }
@@ -762,7 +833,13 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     stats.merges += 1;
     await reconcile(w, { refreshAll: false });
   }
-  async function reconcile(sw, { refreshAll }) {
+  // 整層重建一次只做一個：接手和只看的同步不會同時重建（不會重複生出同一個實例）
+  function reconcile(sw, opts) {
+    const p = rebuildChain.then(() => reconcileNow(sw, opts));
+    rebuildChain = p.catch(() => {});
+    return p;
+  }
+  async function reconcileNow(sw, { refreshAll }) {
     if (!world || sw.id !== world.id) return;
     const byId = new Map(sw.items.map((it) => [it.id, it]));
     for (const [id, L] of [...live]) {
@@ -880,6 +957,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     await saveWorld('handover');
     stats.handovers += 1;
     role = 'follower';
+    releaseAllKeys('handover');
     renderCrumb();
     try {
       await leaseApi('release');
@@ -904,7 +982,14 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     ray.setFromCamera(ndc, camera);
     clickRay(ray);
   });
+  const loadingNow = () => busy || loadingWhy === 'takeover';
   function clickRay(rc, by = 'pointer') {
+    if (loadingNow()) {
+      // 這一層還在載入／接手：這一下不算（不會點到還沒起來的作品、也不會送給作品兩次）
+      stats.ignoredWhileLoading += 1;
+      toast(busy ? '⏳ 這一層還在載入，等一下再點' : '⏳ 接手中，等一下再點');
+      return { loading: true };
+    }
     const ph = rc.intersectObjects(portalsG.children, true)[0];
     const hit = host?.pick(rc);
     if (ph && (!hit || ph.distance <= (hit.distance ?? Infinity))) {
@@ -927,12 +1012,27 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     return hit;
   }
   const KEYMAP = { ArrowLeft: 'left', a: 'left', A: 'left', ArrowRight: 'right', d: 'right', D: 'right', ArrowUp: 'up', w: 'up', W: 'up', ArrowDown: 'down', s: 'down', S: 'down', ' ': 'action' };
-  // 按下方向（鍵盤或手機方向鈕都走這裡）：執行中就照著動；只看的分頁這一下是「接手」——
+  // 按下方向（鍵盤、手機方向鈕、眼鏡裡的方向鍵都走這裡）：執行中就照著動；只看的分頁這一下是「接手」——
   // 按住的話接手後就照著動，很快點一下只拿來接手（不補那一下，避免接手得快慢決定方塊會不會動）
   function pressKey(k) {
+    if (!(k in keys)) return;
     if (role === 'follower') ensureLeader();
     else tappedAt[k] = performance.now();
     keys[k] = true;
+  }
+  function releaseKey(k) {
+    if (k in keys) keys[k] = false;
+  }
+  const keyHeld = (k) => !!keys[k];
+  // 全部放開（換層、交出執行權、離開眼鏡、切到背景、視窗失焦）：不會有鍵卡在「按著」
+  function releaseAllKeys(reason = 'release') {
+    let any = false;
+    for (const k of Object.keys(keys)) {
+      if (keys[k]) any = true;
+      keys[k] = false;
+      tappedAt[k] = -1e9;
+    }
+    if (any) stats.keyReleases[reason] = (stats.keyReleases[reason] || 0) + 1;
   }
   on(win, 'keydown', (e) => {
     if (e.target.closest?.('input, textarea')) return;
@@ -944,42 +1044,100 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   });
   on(win, 'keyup', (e) => {
     const k = KEYMAP[e.key];
-    if (k) keys[k] = false;
+    if (k) releaseKey(k);
   });
+  on(win, 'blur', () => releaseAllKeys('blur')); // 切到別的視窗：放開的那一下收不到，直接全部放開
   ui.querySelectorAll('#cKeys [data-k]').forEach((b) => {
     const k = b.dataset.k;
     b.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       pressKey(k); // 和鍵盤一樣：只看的分頁按方向鈕＝接手
     });
-    for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(ev, () => (keys[k] = false));
+    for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(ev, () => releaseKey(k));
   });
 
   // ---------------- 語音（接續工坊的 SpeechRecognition，見 voice.mjs） ----------------
   let voiceText = '';
+  let needTap = false; // 這個瀏覽器實測不接受「不是使用者手勢」開始收音（凝視、捏合）：之後請他點螢幕
+  let micPermission = 'unknown';
   const voice = createVoice({
+    win,
     onPartial: (u, text) => {
       voiceText = text;
       $('#cInput').value = text;
-      setJobText(`🎙 聽到：${text}`, { cancel: true });
+      setJobText(`🎙 聽到：${text}\n（說完會${targetText(u.context)}${u.context.worldId !== world?.id ? `，在〈${u.context.worldName}〉那一層` : ''}）`, { cancel: true });
     },
     onState: (s) => {
       $('#cMic').classList.toggle('on', s === 'listening');
+      if (s !== 'listening') voiceText = '';
       onVoiceState?.(s);
     },
     onFinal: (u, text) => {
       voiceText = '';
       submit(text, { source: 'voice', utteranceId: u.id, context: u.context }).catch((e) => setJobText(`送不出去：${e.message}`, { warn: true }));
     },
-    onError: (code, msg) => msg && setJobText(`🎙 ${msg}`, { warn: true }),
+    onError: (code, msg, u) => {
+      if ((code === 'not-allowed' || code === 'start') && u?.gesture === false) {
+        needTap = true;
+        setJobText('🎙 這個瀏覽器要點一下螢幕（或紙盒的觸控鈕）才會開始聽：凝視、捏合不算使用者手勢', { warn: true });
+        return;
+      }
+      if (msg) setJobText(`🎙 ${msg}`, { warn: true });
+    },
   });
   let onVoiceState = null;
-  function toggleVoice() {
+  // 開始說：gesture＝這一下是不是使用者手勢（點螢幕、按鈕）；凝視／捏合不是
+  function startVoice({ gesture } = {}) {
+    if (!voice.supported) {
+      setJobText(voice.reason === 'insecure' ? '🎙 語音要安全連線（https 或這台電腦本機），請改用打字' : '🎙 這個瀏覽器不支援語音，請改用打字', { warn: true });
+      return { ok: false, why: voice.reason };
+    }
+    if (voice.listening) return { ok: true, already: true };
+    const u = voice.start(captureContext(), { gesture });
+    if (u) setJobText(`🎙 聽著…（說完會${targetText(u.context)}）`, { cancel: true });
+    return u ? { ok: true } : { ok: false, why: 'start' };
+  }
+  function toggleVoice(opts = {}) {
     if (voice.listening) voice.stop();
-    else voice.start(captureContext());
+    else startVoice(opts);
     return voice.listening;
   }
+  // 取消：正在說就丟掉這句（不送出）；不然把還沒做完的需求都取消
+  function cancelRequest() {
+    if (voice.listening) {
+      voice.cancel('user');
+      stats.voiceDropped.user = (stats.voiceDropped.user || 0) + 1;
+      setJobText('🎙 這句已經取消，沒有送出');
+      return { cancelled: 'voice' };
+    }
+    const open = [...jobs.values()].filter((J) => !J.done);
+    for (const J of open) api('POST', `/api/create/${J.job.id}/cancel`, {}).catch(() => {});
+    if (open.length) setJobText(`取消 ${open.length} 個還沒做完的需求…`);
+    return { cancelled: open.length ? 'jobs' : null, n: open.length };
+  }
+  // 離開眼鏡模式、切到背景：正在說的那句當場丟掉（回來不會補送）、按著的鍵放開
+  function onSuspend(reason = 'background') {
+    releaseAllKeys(reason);
+    if (!voice.listening) return false;
+    voice.cancel(reason);
+    stats.voiceDropped[reason] = (stats.voiceDropped[reason] || 0) + 1;
+    setJobText(reason === 'exit' ? '🎙 離開眼鏡模式：剛剛那句已經丟掉，沒有送出' : '🎙 切到背景：剛剛那句已經丟掉，沒有送出', { warn: true });
+    return true;
+  }
+  on(doc, 'visibilitychange', () => doc.visibilityState === 'hidden' && onSuspend('background'));
+  on(win, 'pagehide', () => onSuspend('background'));
   if (!voice.supported) $('#cMic').title = voice.reason === 'insecure' ? '語音要 https 或電腦本機；請改用打字' : '這個瀏覽器不支援語音；請改用打字';
+  // 麥克風權限（Permissions API；Safari 舊版沒有就是 unknown）：凝視／捏合要開始說話時，只有已經允許才試
+  (async () => {
+    try {
+      const p = await win.navigator.permissions?.query({ name: 'microphone' });
+      if (!p) return;
+      micPermission = p.state;
+      p.onchange = () => (micPermission = p.state);
+    } catch {
+      /* 不支援這個名字 */
+    }
+  })();
 
   // ---------------- 按鈕 ----------------
   $('#cSend').onclick = () => submit($('#cInput').value).catch((e) => setJobText(`送不出去：${e.message}`, { warn: true }));
@@ -989,13 +1147,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
       $('#cSend').click();
     }
   });
-  $('#cMic').onclick = () => {
-    if (!voice.supported) {
-      setJobText(voice.reason === 'insecure' ? '🎙 語音要安全連線（https 或這台電腦本機），請改用打字' : '🎙 這個瀏覽器不支援語音，請改用打字', { warn: true });
-      return;
-    }
-    toggleVoice();
-  };
+  $('#cMic').onclick = () => toggleVoice({ gesture: true });
   $('#cMode').onclick = () => {
     if (!selected) {
       toast('先點一下要改的作品');
@@ -1004,12 +1156,8 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     setMode(mode === 'new' ? 'modify' : 'new');
   };
   $('#cJobCancel').onclick = () => {
-    if (voice.listening) {
-      voice.cancel();
-      setJobText('');
-      return;
-    }
-    for (const J of jobs.values()) if (!J.done) api('POST', `/api/create/${J.job.id}/cancel`, {}).catch(() => {});
+    const r = cancelRequest();
+    if (r.cancelled === 'voice') setJobText('');
   };
   $('#cChild').onclick = () => createChild().catch((e) => toast(`開不了子世界：${e.message}`));
   $('#cPairBtn').onclick = async () => {
@@ -1120,6 +1268,10 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   }
   function pinch(hover) {
     if (!hover?.inst) return false;
+    if (loadingNow()) {
+      stats.ignoredWhileLoading += 1; // 載入／接手中：這一下不算（模式牌寫著在等）
+      return true;
+    }
     if (hover.inst.portal) {
       enter(hover.inst.portal);
       return true;
@@ -1133,9 +1285,201 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     return true;
   }
   let lastStatus = '';
+  const short = (t, n = 6) => ([...String(t || '')].length > n ? `${[...t].slice(0, n - 1).join('')}…` : t);
+  // 眼鏡 HUD 下方兩行：聽到的字／做到哪裡＋下一步怎麼做
   function headsetLines() {
-    if (voice.listening) return [`🎙 聽到：${voiceText || '（說吧）'}`, '說完會自動送出；點一下螢幕停止'];
-    return [lastStatus.split('\n')[0] || (voice.supported ? '點一下螢幕說出想玩的東西' : '這裡不能用語音（要 https）'), selected ? `選取：${live.get(selected)?.name || ''}（說「把這個改成…」）` : ''].filter(Boolean);
+    if (voice.listening) return [`🎙 聽到：${voiceText || '（說吧）'}`, `說完自動送出（${targetText(voice.current?.context)}）；點螢幕停止，選單「✕ 取消」丟掉`];
+    const first = lastStatus.split('\n')[0] || (voice.supported ? '點一下螢幕說出想玩的東西' : '這裡不能用語音（要 https）');
+    const L = selected && live.get(selected);
+    const hint = loadingNow() ? '' : L && mode !== 'modify' ? `選了「${L.name}」：要改它，低頭選「✏️ 改」再說` : '';
+    return [first, hint].filter(Boolean);
+  }
+  // 模式牌：現在說話會做什麼（一直看得到；不靠自然語句猜「這個」）
+  function headsetMode() {
+    if (busy) return { text: '⏳ 載入這一層中…', kind: 'wait' };
+    if (loadingWhy === 'takeover') return { text: '⏳ 接手這一層中…（完成後才會照你的按鍵動）', kind: 'wait' };
+    if (voice.listening) return { text: `🎙 聽著：說完會${targetText(voice.current?.context)}`, kind: 'listen' };
+    const off = me?.connector && !me.connector.online ? '（你的 Codex 沒連上：說了會排隊）' : '';
+    if (off) refreshConnectorSoon(); // 剛在電腦上開了 connector：3 秒內就更新，不等 15 秒的定時檢查
+    const L = modeTarget();
+    if (L) return { text: `✏️ 說話＝改「${L.name}」v${L.version}${off}`, kind: 'modify' };
+    return { text: `✨ 說話＝做新作品${role === 'follower' ? '（只看：動手會先接手）' : off}`, kind: 'new' };
+  }
+  // 選取作品自己的 HUD（分數、剩幾條命…）
+  function headsetGame() {
+    const L = selected && live.get(selected);
+    if (!L) return null;
+    return [`${L.broken ? '⚠️ ' : ''}${L.name} v${L.version}${role === 'follower' ? '（只看）' : ''}`, ...(huds.get(L.hostId) || [])];
+  }
+  // 最近有新版本的作品排前面（在子世界做的，回到外層一打開就在第一頁）；別的分頁、別人做的新作品：打開這頁時超過 5 秒就重抓
+  let libAt = 0;
+  function refreshLineagesSoon() {
+    if (performance.now() - libAt < 5000) return;
+    libAt = performance.now();
+    api('GET', '/api/lineages').then((r) => {
+      lineages = r.lineages;
+      renderLib();
+    }, () => {});
+  }
+  function recentLineages() {
+    const at = (L) => Math.max(0, ...(L.versions || []).map((v) => v.at || 0));
+    return [...lineages].filter((L) => (L.latestGood ?? null) != null).sort((a, b) => at(b) - at(a));
+  }
+  let portalPage = 0;
+  let placePage = 0;
+  // 眼鏡裡的選單（headset.mjs 畫、這裡決定每一頁有什麼）：id 開頭 c: 由 headsetAction 處理，sys:／page: 由 headset 處理
+  function headsetMenu(page, { padOn = false, padAvailable = false } = {}) {
+    const L = selected && live.get(selected);
+    const loading = loadingNow();
+    const where = `〈${short(world?.name, 8)}〉第 ${world?.depth ?? 0} 層`;
+    if (page === 'world') {
+      const portals = [...(world?.portals || [])].reverse(); // 新開的排前面
+      const per = 3;
+      const pages = Math.max(1, Math.ceil(portals.length / per));
+      portalPage %= pages;
+      const shown = portals.slice(portalPage * per, portalPage * per + per);
+      return {
+        title: `🌀 子世界：${where}${portals.length ? `（${portals.length} 個傳送門）` : ''}`,
+        hint: loading ? '⏳ 載入中' : '',
+        rows: [
+          [{ id: 'c:child', label: '＋ 開子世界', enabled: !loading }, ...shown.map((p) => ({ id: `c:enter:${p.world}`, label: `進入〈${short(p.name, 7)}〉`, enabled: !loading }))],
+          [{ id: 'c:up', label: '⬑ 回上一層', enabled: !!world?.parentId && !loading }, { id: 'page:place', label: '🧩 放作品…' }, pages > 1 ? { id: 'c:portals-next', label: `▸ 其他（${portalPage + 1}/${pages}）` } : null, { id: 'page:main', label: '‹ 返回' }],
+        ],
+      };
+    }
+    if (page === 'place') {
+      refreshLineagesSoon();
+      const list = recentLineages();
+      const per = 3;
+      const pages = Math.max(1, Math.ceil(list.length / per));
+      placePage %= pages;
+      const shown = list.slice(placePage * per, placePage * per + per);
+      return {
+        title: list.length ? `🧩 放作品到${where}（作品庫，最新的在前）` : '🧩 作品庫還是空的：先說一個想玩的東西',
+        hint: '',
+        rows: [
+          shown.length ? shown.map((x) => ({ id: `c:place:${x.id}`, label: `放〈${short(x.name, 6)}〉v${x.latestGood}`, enabled: !loading })) : [{ id: 'page:main', label: '‹ 返回' }],
+          shown.length ? [pages > 1 ? { id: 'c:place-next', label: `▸ 下一頁（${placePage + 1}/${pages}）` } : null, { id: 'page:world', label: '‹ 子世界' }, { id: 'page:main', label: '‹ 返回' }] : [],
+        ],
+      };
+    }
+    if (page === 'more') {
+      const lin = L && lineages.find((x) => x.id === L.lineage);
+      const prev = lin?.versions.filter((v) => v.v < L.version && !v.broken).at(-1);
+      return {
+        title: '⚙ 更多',
+        hint: '',
+        rows: [
+          [{ id: 'c:revert', label: prev ? `↶ 退回 v${prev.v}` : '↶ 退回上一版', enabled: !!prev && role === 'leader' && !loading }, { id: 'sys:recenter', label: '⟳ 回正' }, { id: 'sys:calib', label: '▦ 校正圖' }, { id: 'sys:align', label: '◎ 對位檢查' }],
+          [{ id: 'sys:exit', label: '✕ 離開眼鏡' }, { id: 'page:main', label: '‹ 返回' }],
+        ],
+      };
+    }
+    const open = [...jobs.values()].filter((J) => !J.done).length;
+    return {
+      title: `🌀 ${where}${role === 'follower' ? '（只看）' : ''}`,
+      hint: loading ? '⏳ 載入中' : '盯著 1.5 秒或捏一下',
+      rows: [
+        [
+          { id: 'c:new', label: '✨ 新作品', active: mode === 'new' && !voice.listening },
+          { id: 'c:modify', label: L ? `✏️ 改「${short(L.name, 4)}」` : '✏️ 改選取的', enabled: !!L, active: mode === 'modify' },
+          { id: 'c:voice', label: voice.listening ? '■ 停止（送出）' : '🎙 說話', active: voice.listening, enabled: voice.supported },
+          { id: 'c:cancel', label: '✕ 取消需求', enabled: voice.listening || open > 0 },
+        ],
+        [{ id: 'page:world', label: '🌀 子世界…' }, { id: 'c:up', label: '⬑ 回上一層', enabled: !!world?.parentId && !loading }, padAvailable ? { id: 'sys:pad', label: padOn ? '🎮 收起方向鍵' : '🎮 方向鍵', active: padOn } : null, { id: 'page:more', label: '⚙ 更多…' }],
+      ],
+    };
+  }
+  // 選單從眼鏡裡被按下（凝視或捏合——都不是瀏覽器認可的使用者手勢）：回傳 { page, note } 給 headset 換頁、顯示提示
+  function headsetAction(id) {
+    if (id === 'c:new') {
+      setMode('new');
+      return { note: '✨ 現在說話會做新作品：點一下螢幕開始說' };
+    }
+    if (id === 'c:modify') {
+      if (!selected) return { note: '先用手指著作品捏一下（選取），再選「✏️ 改」' };
+      setMode('modify');
+      const L = live.get(selected);
+      return { note: `✏️ 現在說話會改「${L.name}」v${L.version}：點一下螢幕開始說` };
+    }
+    if (id === 'c:voice') {
+      if (voice.listening) {
+        voice.stop();
+        return { note: '停止收音：這句送出' };
+      }
+      if (!voice.supported) return { note: voice.reason === 'insecure' ? '這裡不能用語音（要 https）' : '這個瀏覽器不支援語音' };
+      // 凝視／捏合不是使用者手勢：只有麥克風已經允許、而且這個瀏覽器沒擋過，才直接試；不然請他點螢幕
+      if (needTap || micPermission !== 'granted') return { note: needTap ? '點一下螢幕開始說（這個瀏覽器不接受凝視／捏合開始收音）' : '點一下螢幕開始說（第一次要允許麥克風）', ms: 4500 };
+      const r = startVoice({ gesture: false });
+      return { note: r.ok ? '🎙 開始聽了：說吧' : '點一下螢幕開始說', ms: 3000 };
+    }
+    if (id === 'c:cancel') {
+      const r = cancelRequest();
+      return { note: r.cancelled === 'voice' ? '這句取消了，沒有送出' : r.cancelled === 'jobs' ? `取消 ${r.n} 個需求` : '沒有要取消的' };
+    }
+    if (id === 'c:child') {
+      createChild({ ask: false })
+        .then(() => {
+          portalPage = 0;
+        })
+        .catch((e) => setJobText(`開不了子世界：${e.message}`, { warn: true }));
+      return { page: 'world', note: '開好會出現在「進入〈…〉」' };
+    }
+    if (id.startsWith('c:enter:')) {
+      enter(id.slice('c:enter:'.length));
+      return { page: 'main', note: '進入子世界…' };
+    }
+    if (id === 'c:up') {
+      goUp();
+      return { page: 'main', note: '回上一層…' };
+    }
+    if (id === 'c:portals-next') {
+      portalPage += 1;
+      return null;
+    }
+    if (id === 'c:place-next') {
+      placePage += 1;
+      return null;
+    }
+    if (id.startsWith('c:place:')) {
+      const L = lineages.find((x) => x.id === id.slice('c:place:'.length));
+      if (!L) return { note: '找不到這個作品' };
+      placeNew(L.id, L.latestGood ?? L.latest).catch((e) => setJobText(`放不上去：${e.message}`, { warn: true }));
+      return { page: 'main', note: `放一個〈${L.name}〉v${L.latestGood ?? L.latest} 到這一層` };
+    }
+    if (id === 'c:revert') {
+      revertSelected().then((r) => !r.ok && setJobText(`沒退回：${r.error}`, { warn: true }));
+      return { note: '退回上一版中…（狀態保留）' };
+    }
+    return null;
+  }
+  // 退回選取作品的上一版（這一層同一條作品線、同一版的實例一起換回去）：存檔格式一樣才帶著現在的狀態退
+  async function revertSelected() {
+    const L = selected && live.get(selected);
+    if (!L) return { ok: false, error: '先選一個作品' };
+    try {
+      lineages = (await api('GET', '/api/lineages')).lineages;
+      renderLib();
+    } catch {
+      /* 用手上的 */
+    }
+    const lin = lineages.find((x) => x.id === L.lineage);
+    const prev = lin?.versions.filter((v) => v.v < L.version && !v.broken).at(-1);
+    if (!prev) return { ok: false, error: '這是第一版，沒有上一版' };
+    const cur = lin.versions.find((v) => v.v === L.version);
+    if (cur && prev.stateSchema !== cur.stateSchema) return { ok: false, error: `上一版（v${prev.v}）的存檔格式不同，不能帶著現在的狀態退回` };
+    const r = await swapLineage(L.lineage, prev.v, null, { from: L.version });
+    if (r?.ok && r.swapped) setJobText(`已退回「${L.name}」v${prev.v}（狀態保留；要再換回新版，選取後說要怎麼改，或在電腦上放新版）`);
+    return r?.ok ? { ok: true, version: prev.v, swapped: r.swapped } : { ok: false, error: r?.error || '退不回去' };
+  }
+  async function connectorStatus() {
+    try {
+      const s = await api('GET', '/api/connector/status');
+      if (me) me.connector = s;
+      return s;
+    } catch {
+      return null;
+    }
   }
 
   return {
@@ -1150,7 +1494,20 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     submit,
     placeNew,
     swapLineage,
+    revertSelected,
     toggleVoice,
+    startVoice,
+    cancelRequest,
+    onSuspend,
+    pressKey,
+    releaseKey,
+    releaseAllKeys,
+    keyHeld,
+    headsetMenu,
+    headsetAction,
+    headsetMode,
+    headsetGame,
+    connectorStatus,
     clickRay,
     voice,
     select,
@@ -1176,18 +1533,22 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
       return {
         me,
         world: world && { id: world.id, name: world.name, depth: world.depth, revision: world.revision, portals: world.portals.length, items: world.items.length },
-        loading: busy, // 進入／返回途中：world 已經換了，但作品還沒全部起來（測試要等這個變 false 才算到了）
+        loading: busy || !!loadingWhy, // 進入／返回、接手、只看的同步重建途中：作品還沒全部起來（測試要等這個變 false 才算到了）
+        loadingWhy: busy ? 'enter' : loadingWhy,
         live: [...live.values()].map((L) => ({ id: L.item.id, hostId: L.hostId, lineage: L.lineage, version: L.version, name: L.name, broken: L.broken, hud: huds.get(L.hostId) || [] })),
-        jobs: [...jobs.values()].map((J) => ({ id: J.job.id, status: J.job.status, kind: J.kind, worldId: J.context.worldId, attempts: J.job.attempts, lineage: J.job.lineage, version: J.job.version })),
+        jobs: [...jobs.values()].map((J) => ({ id: J.job.id, status: J.job.status, kind: J.kind, worldId: J.context.worldId, targetLineage: J.context.targetLineage, baseVersion: J.context.baseVersion, targetItem: J.context.targetItem, source: J.job.source, intent: J.job.intent, attempts: J.job.attempts, lineage: J.job.lineage, version: J.job.version })),
         watching: [...watching.keys()],
         host: host?.stats(),
-        stats: { ...stats },
+        stats: { ...stats, keyReleases: { ...stats.keyReleases }, voiceDropped: { ...stats.voiceDropped }, loadings: { ...stats.loadings } },
+        keys: { ...keys },
+        voice: { listening: voice.listening, needTap, micPermission, current: voice.current ? { id: voice.current.id, context: voice.current.context } : null, stats: voice.stats() },
         role,
         clientId,
         followers,
         connState,
         selected,
         mode,
+        modeTarget: modeTarget()?.item.id ?? null,
       };
     },
     host: () => host,

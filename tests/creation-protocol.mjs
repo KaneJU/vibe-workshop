@@ -150,6 +150,9 @@ vibe.define({ init() { return { r }; }, tick() {}, view(s) { throw new Error('�
 
   // 改作品：stateSchema 1 → 2 要 migrate；同一條作品線 v2
   const jm = (await A('POST', '/api/create', { utteranceId: 'utt-a-mod01', intent: '加上連擊', source: 'voice', worldId: 'root', targetLineage: L1, baseVersion: 1 })).json.job;
+  // 同時（v2 還沒做好之前）另一台裝置也送了一個基於 v1 的修改：等 v2 做好才交 → 衝突（見下面）
+  await sleep(5);
+  const jc = (await A('POST', '/api/create', { utteranceId: 'utt-a-conf1', intent: '改顏色', source: 'text', worldId: 'root', targetLineage: L1, baseVersion: 1 })).json.job;
   const gm = (await KA('GET', '/api/connector/jobs?wait=1')).json.job;
   check('改作品的工作附上原本 v1 的程式給 connector', gm.id === jm.id && gm.target?.lineage === L1 && gm.target.code === GOOD);
   const noMig = (await KA('POST', `/api/connector/jobs/${jm.id}/package`, pkg('點球', V2.replace(/\n\s*migrate\(old, from\).*\n/, '\n'), 2))).json;
@@ -158,11 +161,10 @@ vibe.define({ init() { return { r }; }, tick() {}, view(s) { throw new Error('�
   check('有 migrate：用 v1 真的跑出來的存檔試遷移 → 通過，同一條作品線 v2', v2.ok && v2.lineage === L1 && v2.version === 2);
   check('v1 原檔沒被改（不可變）', (await (await fetch(`${BASE}/pkg/${L1}/1/main.js`)).text()) === GOOD);
 
-  // 衝突：基於舊版（v1）的修改晚到
-  const jc = (await A('POST', '/api/create', { utteranceId: 'utt-a-conf1', intent: '改顏色', source: 'text', worldId: 'root', targetLineage: L1, baseVersion: 1 })).json.job;
-  await KA('GET', '/api/connector/jobs?wait=1');
+  // 衝突：送出時還是 v1、做的期間別人（另一台裝置）先做好了 v2 → 晚交的不覆蓋
+  const gc = (await KA('GET', '/api/connector/jobs?wait=1')).json.job;
   const conf = (await KA('POST', `/api/connector/jobs/${jc.id}/package`, pkg('點球', GOOD))).json;
-  check('基於 v1 的修改在 v2 之後才交：回報衝突，不覆蓋', !conf.ok && conf.conflict && conf.status === 'conflict');
+  check('基於 v1 的修改在 v2 之後才交（送出時 v2 還沒有）：回報衝突，不覆蓋', gc.id === jc.id && !conf.ok && conf.conflict && conf.status === 'conflict');
 
   // 乙改甲的作品：分出乙自己的作品線（甲的不動）
   const jb = (await B('POST', '/api/create', { utteranceId: 'utt-b-fork1', intent: '我也要改', source: 'text', worldId: 'root', targetLineage: L1, baseVersion: 2 })).json.job;
@@ -271,6 +273,31 @@ vibe.define({ init() { return { r }; }, tick() {}, view(s) { throw new Error('�
   check('presence：開著的分頁數會通知（2 個）', events.some((e) => e.ev === 'presence' && e.data.n === 2));
   stopA();
   stopB();
+
+  // 退回上一版之後再改（眼鏡選單「↶ 退回」之後說要怎麼改）：送出前就有的新版不算衝突；
+  // 影子試跑拿「基準版本」跑出來的存檔試（不是最新版）：v3 的存檔格式跟 v1 一樣，就不用寫 migrate
+  const jr1 = (await A('POST', '/api/create', { utteranceId: 'utt-a-rev01', intent: '退回測試', source: 'text', worldId: 'root' })).json.job;
+  await KA('GET', '/api/connector/jobs?wait=1');
+  const r1 = (await KA('POST', `/api/connector/jobs/${jr1.id}/package`, pkg('退回測試', GOOD))).json;
+  const LR = r1.lineage;
+  const jr2 = (await A('POST', '/api/create', { utteranceId: 'utt-a-rev02', intent: '加上連擊', source: 'text', worldId: 'root', targetLineage: LR, baseVersion: 1 })).json.job;
+  await KA('GET', '/api/connector/jobs?wait=1');
+  const r2 = (await KA('POST', `/api/connector/jobs/${jr2.id}/package`, pkg('退回測試', V2, 2))).json;
+  await sleep(5);
+  const jr3 = (await A('POST', '/api/create', { utteranceId: 'utt-a-rev03', intent: '從 v1 改成紅色', source: 'voice', worldId: 'root', targetLineage: LR, baseVersion: 1 })).json.job;
+  const gr3 = (await KA('GET', '/api/connector/jobs?wait=1')).json.job;
+  const r3 = (await KA('POST', `/api/connector/jobs/${jr3.id}/package`, pkg('退回測試', GOOD.replace("'#33ccff'", "'#ff3333'"), 1))).json;
+  check('退回 v1 後再明確以 v1 為基準改：送出前就有的 v2 不算衝突 → 同一條作品線 v3；connector 拿到的是 v1 的程式', r1.ok && r2.ok && r2.version === 2 && gr3.id === jr3.id && gr3.target.baseVersion === 1 && gr3.target.code === GOOD && r3.ok && r3.version === 3 && !r3.conflict, JSON.stringify(r3.diagnostics || ''));
+  check('影子試跑用基準版（v1，存檔格式 1）的存檔：格式跟 v1 一樣的 v3 不用寫 migrate（不會拿最新的 v2 來比）', r3.ok && (await A('GET', '/api/lineages')).json.lineages.find((l) => l.id === LR).versions.map((x) => x.stateSchema).join() === '1,2,1');
+  // 同一條作品線：另一個以 v1 為基準的修改在 v3 做好之前就送出 → v3 做好後才交：仍然是衝突（併發保護沒有放鬆）
+  const jr4 = (await A('POST', '/api/create', { utteranceId: 'utt-a-rev04', intent: '也從 v1 改', source: 'text', worldId: 'root', targetLineage: LR, baseVersion: 1 })).json.job;
+  const jr5 = (await A('POST', '/api/create', { utteranceId: 'utt-a-rev05', intent: '從 v3 改', source: 'text', worldId: 'root', targetLineage: LR, baseVersion: 3 })).json.job;
+  await KA('GET', '/api/connector/jobs?wait=1');
+  const r5 = (await KA('POST', `/api/connector/jobs/${jr5.id}/package`, pkg('退回測試', GOOD.replace("'#33ccff'", "'#33ff33'"), 1))).json;
+  await KA('GET', '/api/connector/jobs?wait=1');
+  const r4 = (await KA('POST', `/api/connector/jobs/${jr4.id}/package`, pkg('退回測試', GOOD.replace("'#33ccff'", "'#3333ff'"), 1))).json;
+  check('併發保護沒有放鬆：送出後才出現的 v4 → 晚交、基於 v1 的修改仍然回報衝突', r5.ok && r5.version === 4 && !r4.ok && r4.conflict && /v4/.test(r4.diagnostics.join()), r4.diagnostics?.[0]);
+
   check('沒有創作者身分不能開世界、不能送需求', (await browser()('POST', '/api/cworlds', { parentId: 'root' })).status === 401);
 } catch (e) {
   check('測試流程沒有例外', false, e.stack || e.message);

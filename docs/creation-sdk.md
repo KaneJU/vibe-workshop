@@ -84,7 +84,8 @@ vibe.define({
 { t, keys: { left, right, up, down, action }, player: { x, y, z } }
 ```
 
-`t`：這個實例開始到現在的秒數；`keys`：方向鍵／WASD／空白鍵（手機上是畫面上的方向鈕）；`player`：玩家（鏡頭）在這個實例區域座標的位置。
+`t`：這個實例開始到現在的秒數；`keys`：方向鍵／WASD／空白鍵（手機上是畫面上的方向鈕；眼鏡模式是視線下方的方向鍵，用手捏住＝按住、張開＝放開，`action` 是 ⚡）；`player`：玩家（鏡頭）在這個實例區域座標的位置。
+按鍵一定會放開：換層、交出執行權、離開眼鏡模式、切到背景、視窗失焦、眼鏡裡手不見時，全部的鍵都變回 `false`。
 
 ### 規則
 
@@ -102,8 +103,9 @@ vibe.define({
 ## 3. 世界與嵌套
 
 - 世界是一個容器：放在裡面的作品實例（各自的狀態）＋通往子世界的傳送門。根世界是 `root`。
-- 在任何一層都可以說需求／打字建立新作品、修改選取的作品、開一個子世界（傳送門）。
-- **按需載入**：只有目前所在的那一層在執行；其他層只是存檔裡的引用（世界 id、作品線＋版本、狀態）。進入子世界時，目前這層先存檔再停掉；返回時子世界存檔停掉、上一層從存檔恢復。載入途中麵包屑先換成新的一層並標「⏳ 載入中…」、「回上一層」先停用，作品全部起來才解除（診斷用的 `state().loading` 同步變成 false；`world` 會比作品先換，等「到了」要等 `loading` 結束）。
+- 在任何一層都可以說需求／打字建立新作品、修改選取的作品、開一個子世界（傳送門）。「新作品」「改選取的」是明確的模式：選取不會自己變成修改，要按「✏️ 改」；改選別的作品就回到新作品。開口（或按送出）那一刻就記下「哪一層、新作品還是改哪一件的哪一版」，之後換層、換選取都不影響那一句。
+- 退回上一版：把這一層同一條作品線、同一版的實例一起換回上一個能用的版本（同一筆換版交易、同樣的影子試跑與觀察期）；上一版的 `stateSchema` 一樣才帶著現在的狀態退，不一樣就不退。退回之後再說要怎麼改，就以退回的那一版為基準。
+- **按需載入**：只有目前所在的那一層在執行；其他層只是存檔裡的引用（世界 id、作品線＋版本、狀態）。進入子世界時，目前這層先存檔再停掉；返回時子世界存檔停掉、上一層從存檔恢復。載入途中麵包屑先換成新的一層並標「⏳ 載入中…」、「回上一層」先停用，作品全部起來才解除（診斷用的 `state().loading` 同步變成 false；`world` 會比作品先換，等「到了」要等 `loading` 結束）。接手（重建成最新存檔）與只看的分頁跟著存檔重建這一層時，`state().loading` 也是 true（`loadingWhy`：`takeover`／`resync`）；接手完成前點擊、捏合不算，按住的方向鍵等接手完才開始動。
 - 作品庫是共用的：在 C 層做的作品，回到 A 層一樣能放；同一個作品放兩個，各有各的狀態。每個實例都有自己的 id，點擊與修改都指向那一個實例。
 - 沒有固定的層數上限；有資源上限：每個世界最多 200 個實例、每位創作者最多 2000 個世界、每個存檔 64 KB。世界是樹狀（只能在目前這層開子世界），不會形成循環。
 
@@ -128,7 +130,7 @@ vibe.define({
 | POST | `/api/connector/jobs/:id/progress` | connector | `{ message }` |
 | POST | `/api/connector/jobs/:id/package` | connector | `{ manifest, files: { 'main.js' }, provenance }` → 驗證＋影子試跑 → `{ ok, lineage, version }` 或 `{ ok: false, diagnostics }` |
 | POST | `/api/connector/jobs/:id/fail` | connector | `{ message, quota }`（例如 Codex 沒登入；`quota: true`＝額度用完，跟一般失敗分開） |
-| POST | `/api/create` | 瀏覽器 | `{ utteranceId, intent, source（voice 或 text）, worldId, selected, targetLineage, baseVersion }` → 工作（同一個 utteranceId 只會建一次） |
+| POST | `/api/create` | 瀏覽器 | `{ utteranceId, intent, source（voice 或 text）, worldId, selected, targetLineage, baseVersion }` → 工作（同一個 utteranceId 只會建一次）。交作品包時，**送出這個需求之後**才出現、比 `baseVersion` 新而且能用的版本＝衝突（`conflict`，不覆蓋）；送出前就有的新版不算（例如先退回上一版再改）。影子試跑拿 `baseVersion` 那一版跑出來的存檔試遷移 |
 | GET | `/api/create/:id` | 瀏覽器 | 工作狀態：`queued`、`working`、`built`、`needs-fix`、`failed`、`cancelled`、`conflict` |
 | POST | `/api/create/:id/cancel` | 瀏覽器 | 取消 |
 | POST | `/api/create/:id/runtime-fail` | 瀏覽器 | 新版在瀏覽器換版試跑失敗：診斷回到同一個工作，connector 會再修 |

@@ -32,6 +32,8 @@
     "test:builtin-refresh": "node tests/builtin-refresh.mjs",
     "test:quality": "node tests/quality.mjs",
     "test:headset": "node tests/headset-unit.mjs && node tests/headset.mjs",
+    "test:headset-create": "node tests/headset-create.mjs",
+    "test:headset-real": "node tests/headset-real.mjs",
     "test:flash": "node tests/flash-unit.mjs",
     "test:creation": "node tests/creation-protocol.mjs && node tests/sandbox.mjs && node tests/creation.mjs && node tests/creation-nav.mjs && node tests/creation-multitab.mjs",
     "test:connector": "node tests/connector-unit.mjs",

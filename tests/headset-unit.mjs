@@ -8,7 +8,9 @@ import { deviceQuaternion, yawOf, createHeadPose, physicallyLandscape } from '..
 import { createGesture, analyzeHand, pinchRatio, imageToCamera, intrinsics, adjustLandmarks } from '../public/hands.mjs';
 import { createHandTracker, cameraErrorCode } from '../public/handtrack.mjs';
 import { loadModel, VISION } from '../public/handinfer.mjs';
-import { cleanCam, loadSettings, wrapLines } from '../public/headset.mjs';
+import { cleanCam, loadSettings, wrapLines, cameraToEye, alignSuggestion, CAM_DEFAULTS, ALIGN_TARGET } from '../public/headset.mjs';
+import { parseUA, sessionRecord } from '../public/headsetcheck.mjs';
+import { createVoice } from '../public/voice.mjs';
 import { HAND_ERRORS } from '../public/handtrack.mjs';
 
 const results = [];
@@ -327,6 +329,93 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   check('每一則鏡頭／模型錯誤說明都切成 ≤3 行、不會被截斷', all.every((l) => l.length <= 3 && !l.join('').endsWith('…')), `最多 ${Math.max(...all.map((l) => l.length))} 行`);
   const m = wrapLines(HAND_ERRORS['model-missing']).join('|');
   check('英文指令不從中間斷開、標點不放行首', m.includes('npm run fetch:models') && !/\|[，。：]/.test(m), m);
+}
+
+// ---------------- 鏡頭相對眼睛的位置（左右、上下、前後）與對位檢查 ----------------
+{
+  const d = cleanCam({});
+  check('鏡頭偏移預設：左右 0、上下 0、前後 7 公分（跟以前一樣）', d.offsetX === 0 && d.offsetY === 0 && d.offsetZ === 0.07 && CAM_DEFAULTS.offsetZ === 0.07);
+  const c = cleanCam({ offsetX: 0.5, offsetY: -0.5, offsetZ: 0.5 });
+  const c2 = cleanCam({ offsetZ: 0 });
+  check('鏡頭偏移夾在合理範圍（左右、上下 ±10 公分，前後 2–15 公分）', c.offsetX === 0.1 && c.offsetY === -0.1 && c.offsetZ === 0.15 && c2.offsetZ === 0.02);
+  check('舊的設定（沒有上下、前後）讀進來用預設', loadSettings({ getItem: () => JSON.stringify({ cam: { offsetX: 0.03 } }) }).cam.offsetZ === 0.07);
+  const e = cameraToEye({ x: 0.01, y: 0.02, z: -0.3 }, { offsetX: 0.04, offsetY: -0.01, offsetZ: 0.09 });
+  check('鏡頭座標 → 眼睛座標：加上左右／上下、往前推前後距離', near(e.x, 0.05) && near(e.y, 0.01) && near(e.z, -0.39));
+  // 真的鏡頭在（3 公分右、2 公分下、8 公分前），設定還是預設：手放在目標上，鏡頭估的遠近又多估了 25%
+  const truth = { offsetX: 0.03, offsetY: -0.02, offsetZ: 0.08 };
+  const set = cleanCam({});
+  for (const k of [1, 1.25, 0.8]) {
+    const hCam = { x: ALIGN_TARGET.x - truth.offsetX, y: ALIGN_TARGET.y - truth.offsetY, z: ALIGN_TARGET.z + truth.offsetZ };
+    const seen = { x: hCam.x * k, y: hCam.y * k, z: hCam.z * k }; // 單眼估遠近：沿著鏡頭射線放大／縮小
+    const r = alignSuggestion(cameraToEye(seen, set), ALIGN_TARGET, set);
+    check(`對位檢查：遠近估成 ×${k} 也量得出左右／上下偏移（建議值接近真的鏡頭位置）`, Math.abs(r.offsetX - truth.offsetX) < 0.003 && Math.abs(r.offsetY - truth.offsetY) < 0.003, `建議 ${r.offsetX.toFixed(4)} / ${r.offsetY.toFixed(4)}`);
+  }
+  const far = alignSuggestion({ x: 0.5, y: 0, z: -0.4 }, ALIGN_TARGET, set);
+  check('對位差太大：建議值夾在範圍內並標示到邊了', far.offsetX === -0.1 && far.clamped);
+}
+
+// ---------------- 裝盒前檢查：UA 只取名字版本、紀錄只有數字 ----------------
+{
+  const ios = parseUA('Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1');
+  const crios = parseUA('Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/141.0.0.0 Mobile/15E148 Safari/604.1');
+  const inapp = parseUA('Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Line/14.0');
+  const android = parseUA('Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36');
+  check('UA：iPhone Safari／iPhone 上的 Chrome／App 內建瀏覽器／Android Chrome 分得出來', ios.os === 'iOS' && ios.osVersion === '26.0' && ios.browser === 'Safari' && !ios.iosWebView && crios.browser === 'Chrome (iOS)' && inapp.iosWebView && android.os === 'Android' && android.browser === 'Chrome', JSON.stringify({ ios, inapp: inapp.iosWebView }));
+  const rec = sessionRecord(
+    { stats: { frames: 600, frameMs: 16.84, safeDrops: 1, menu: { gaze: 1, pinch: 2, blocked: 0, last: { id: 'c:new', how: 'pinch' } }, pad: { presses: 3, releases: { lost: 1 } }, align: { checks: 1, applied: 0, lastErrorCm: { x: 1, y: 0, z: 2 } } }, pixelRatio: 1.5, tracker: { state: 'running', inferMs: 21.3, latencyMs: 40.2, hz: 19, hzTarget: 20, stale: 0, camera: { label: 'Back Camera', deviceId: 'abc123secret', width: 640, height: 480 }, delegate: 'CPU' }, head: { state: 'active', hz: 60 } },
+    { durationS: 42.4, voice: { starts: 2, finals: 1, firstResultMs: 300, transcript: '不該出現' } },
+  );
+  const raw = JSON.stringify(rec);
+  check('戴著的紀錄只留數字：沒有鏡頭名稱、裝置 id、聽到的字', rec.fps === 59 && rec.tracker.camera.width === 640 && !raw.includes('abc123secret') && !raw.includes('Back Camera') && !raw.includes('不該出現'), raw.slice(0, 160));
+}
+
+// ---------------- 語音：取消當場收尾、晚到的結果不送、停止後瀏覽器沒結束也會收尾 ----------------
+{
+  const made = [];
+  class FakeSR {
+    constructor() {
+      made.push(this);
+      this.aborted = 0;
+    }
+    start() {}
+    stop() {}
+    abort() {
+      this.aborted += 1;
+    }
+  }
+  const win = { SpeechRecognition: FakeSR, isSecureContext: true, navigator: { userActivation: { isActive: false } } };
+  const finals = [];
+  const errors = [];
+  const states = [];
+  const v = createVoice({ win, onFinal: (u, t) => finals.push(t), onError: (code) => errors.push(code), onState: (s) => states.push(s), stopGraceMs: 30, maxMs: 200 });
+  const say = (sr, text, isFinal) => sr.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: text }], { isFinal })] });
+  const u1 = v.start({ worldId: 'A' }, { gesture: true });
+  say(made[0], '做一個', false);
+  check('中間結果不送出', finals.length === 0 && v.listening);
+  check('取消：當場不再聽（不用等瀏覽器的 onend），辨識器被 abort', v.cancel('exit') === true && !v.listening && made[0].aborted === 1 && u1.cancelled);
+  say(made[0], '做一個球', true);
+  made[0].onend();
+  check('取消之後才到的最終結果、onend：不送出', finals.length === 0);
+  const u2 = v.start({ worldId: 'B' }, { gesture: false });
+  check('取消後馬上可以開始下一句（新的辨識器）；記下這句不是使用者手勢', !!u2 && made.length === 2 && v.stats().nonGestureStarts === 1 && v.stats().gestureStarts === 1);
+  say(made[1], '做一個塔', true);
+  say(made[1], '做一個塔', true); // 瀏覽器重送同一個最終結果
+  made[1].onend();
+  made[1].onend();
+  check('最終結果、onend 重送：只交出一次、字也不會疊兩份', finals.length === 1 && finals[0] === '做一個塔', JSON.stringify(finals));
+  const u3 = v.start({ worldId: 'C' });
+  say(made[2], '改成紅色', true);
+  v.stop(); // 瀏覽器一直不送 onend
+  await new Promise((r) => setTimeout(r, 60));
+  check('停止後瀏覽器一直沒結束這句：自己收尾，有聽到的照樣交出一次', finals.length === 2 && finals[1] === '改成紅色' && !v.listening && v.stats().watchdogs === 1 && u3.delivered);
+  const v2 = createVoice({ win: { ...win, SpeechRecognition: class extends FakeSR {
+    start() {
+      throw new Error('not allowed without activation');
+    }
+  } }, onError: (code) => errors.push(code) });
+  check('不是使用者手勢、瀏覽器直接拒絕開始：回報錯誤、算進「非手勢失敗」', v2.start({}, { gesture: false }) === null && v2.stats().nonGestureFailures === 1 && errors.includes('start'));
+  const v3 = createVoice({ win: { isSecureContext: false, SpeechRecognition: FakeSR }, onError: (code) => errors.push(code) });
+  check('非安全連線：不開始，原因 insecure', !v3.supported && v3.reason === 'insecure' && v3.start({}) === null);
 }
 
 const failed = results.filter((r) => !r.ok);

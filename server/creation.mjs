@@ -267,12 +267,15 @@ export function createCreation({ dataDir, log = () => {}, denoBin = process.env.
     if (errs.length) return { ok: false, diagnostics: errs };
     // 要改的作品線：自己的就加新版本；別人的就分出一條自己的（不改到別人的作品線）
     let L = job.targetLineage ? st.lineages[job.targetLineage] : null;
-    // 衝突：生成期間這條作品線多了比基準更新、而且能用的版本（例如朋友改過）→ 不覆蓋，請以新版為基礎重來；壞掉的新版不算
-    const newer = L && job.baseVersion ? L.versions.filter((x) => x.v > job.baseVersion && !x.broken).map((x) => x.v) : [];
+    // 衝突：這個需求送出之後，這條作品線又多了比基準更新、而且能用的版本（例如同一位創作者在另一台裝置也改了）→ 不覆蓋，請以新版為基礎重來；
+    // 送出之前就有的新版不算（例如先「退回上一版」、再明確改那一版）；壞掉的新版不算；沒有時間紀錄的舊資料一律當成衝突
+    const newer = L && job.baseVersion ? L.versions.filter((x) => x.v > job.baseVersion && !x.broken && (x.at ?? Infinity) > job.createdAt).map((x) => x.v) : [];
     if (newer.length) {
       return { ok: false, conflict: true, diagnostics: [`作品「${L.name}」在你生成的時候已經更新到 v${Math.max(...newer)}（你改的是 v${job.baseVersion}）；請以新版為基礎重新說一次`] };
     }
-    const prev = L ? await readVersion(L.id, L.latest) : null;
+    // 影子試跑的「上一版存檔」用這次改的基準版本（實例正在跑的那一版），沒有基準才用最新版
+    const prevV = L && job.baseVersion && L.versions.some((x) => x.v === job.baseVersion) ? job.baseVersion : L?.latest;
+    const prev = L ? await readVersion(L.id, prevV) : null;
     const shadow = await shadowRun({ code, manifest, prev });
     if (!shadow.ok) return { ok: false, diagnostics: shadow.diagnostics?.length ? shadow.diagnostics : ['影子試跑沒有通過'], shadow };
     if (L && L.creatorId !== job.creatorId) {

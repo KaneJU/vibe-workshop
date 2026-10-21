@@ -138,9 +138,9 @@ const HAND_HELPERS = `
     const q = new THREE.Quaternion().fromArray(st.cameraQuat);
     const c = new THREE.Vector3().fromArray(target).sub(eye).applyQuaternion(q.clone().invert());
     const d = a.pinchDepth;
-    const zt = d + 0.07;
+    const zt = d + settings.offsetZ; // 鏡頭在眼睛前方多遠（預設 7 公分，可調）
     const u = 0.5 + ((c.x / -c.z) * zt - settings.offsetX) / (2 * intr.tanX * d) + nudge[0];
-    const v = 0.5 - ((c.y / -c.z) * zt) / (2 * intr.tanY * d) + nudge[1];
+    const v = 0.5 - ((c.y / -c.z) * zt - settings.offsetY) / (2 * intr.tanY * d) + nudge[1];
     const h = make(0.5 + (u - a.pinch.x), 0.5 + (v - a.pinch.y));
     window.__lastHand = h;
     window.__ws.headset.injectResult({ hands: [h] });
@@ -258,6 +258,7 @@ try {
   await page.evaluate(() => window.__keep(true));
   await page.screenshot({ path: path.join(OUT, 'a-04-hover.png') });
   await page.evaluate(() => window.__keep(false));
+  await sleep(120); // 真的辨識結果大約每 50 ms 一筆：剛停止重送就馬上送下一筆，狀態機會用幾毫秒的間隔算出暴衝的速度
   for (let i = 0; i < 8; i += 1) {
     await page.evaluate((t) => window.__hand(0, t), target);
     await page.evaluate(() => window.__frames(3));
@@ -279,6 +280,7 @@ try {
   await page.evaluate(() => window.__keep(true));
   await page.screenshot({ path: path.join(OUT, 'a-05-holding.png') });
   await page.evaluate(() => window.__keep(false));
+  await sleep(120);
   const flings0 = st.stats.flings;
   // 張開手指（防抖：要連續幾次、至少 60 ms 才算放開；SwiftShader 一格可能很慢，最多送 10 次）
   for (let i = 0; i < 10; i += 1) {
@@ -357,17 +359,22 @@ try {
 
   // 視線按鈕：低頭盯著「離開」1.5 秒（沒有動作感測時用拖曳轉頭：真的觸控拖曳）
   await page.evaluate(() => window.__stopSensor());
-  const aim = await page.evaluate(() => {
-    const ws = window.__ws;
-    const THREE = ws.THREE;
-    const menu = ws.scene.getObjectByName('headset-menu');
-    let btn = null;
-    menu.traverse((o) => o.userData.buttonId === 'exit' && (btn = o));
-    const p = btn.getWorldPosition(new THREE.Vector3());
-    const eye = new THREE.Vector3().fromArray(ws.headset.state().eye);
-    const d = p.sub(eye).normalize();
-    return { yaw: Math.atan2(-d.x, -d.z), pitch: Math.asin(d.y) };
-  });
+  // 選單平常收成「☰ 選單」頁籤：要先盯著頁籤展開，再盯著「✕ 離開」
+  const aimOf = (id) =>
+    page.evaluate((x) => {
+      const ws = window.__ws;
+      const THREE = ws.THREE;
+      const menu = ws.scene.getObjectByName('headset-menu');
+      menu.updateMatrixWorld(true);
+      let btn = null;
+      menu.traverse((o) => o.userData.buttonId === x && (btn = o));
+      const p = btn.getWorldPosition(new THREE.Vector3());
+      const eye = new THREE.Vector3().fromArray(ws.headset.state().eye);
+      const d = p.sub(eye).normalize();
+      return { yaw: Math.atan2(-d.x, -d.z), pitch: Math.asin(d.y) };
+    }, id);
+  const aim = await aimOf('sys:exit');
+  const aimTab = await aimOf('menu:open');
   report.notes.gazeAim = aim;
   check('低頭看得到視線選單（在面前下方）', aim.pitch < -0.4 && aim.pitch > -0.9, `pitch ${((aim.pitch * 180) / Math.PI).toFixed(0)}°`);
 
@@ -397,18 +404,25 @@ try {
   fc = await frameCounts(page, 30);
   st = await page.evaluate(() => window.__ws.headset.state());
   check('反覆進出 4 次後：每格仍只更新一次物理、雙眼各一次', fc.physCalls === fc.frames && fc.eyes === fc.frames * 2 && st.stats.enters === 5 && st.stats.exits === 4, JSON.stringify(fc));
-  // 用視線離開（拖曳轉頭到「離開」按鈕，盯 1.5 秒）
+  // 用視線離開（拖曳轉頭：先盯「☰ 選單」1.5 秒展開，再盯「✕ 離開」1.5 秒）
   await page.evaluate(() => window.__frames(100)); // 等動作感測判定沒有訊號（改用拖曳）
   const hs = (await page.evaluate(() => window.__ws.headset.state())).head.state;
   const PX = 1 / 0.006;
   await page.mouse.move(422, 195);
   await page.mouse.down();
-  await page.mouse.move(422 + aim.yaw * PX * 0.5, 195 + aim.pitch * PX * 0.5, { steps: 5 });
-  await page.mouse.move(422 + aim.yaw * PX, 195 + aim.pitch * PX, { steps: 5 });
+  await page.mouse.move(422 + aimTab.yaw * PX * 0.5, 195 + aimTab.pitch * PX * 0.5, { steps: 5 });
+  await page.mouse.move(422 + aimTab.yaw * PX, 195 + aimTab.pitch * PX, { steps: 5 });
+  await page.mouse.up();
+  await page.waitForFunction(() => window.__ws.headset.state().menuOpen, null, { timeout: 6000 }).catch(() => {});
+  const opened = await page.evaluate(() => window.__ws.headset.state().menuOpen);
+  await page.mouse.move(422, 195);
+  await page.mouse.down();
+  await page.mouse.move(422 + (aim.yaw - aimTab.yaw) * PX * 0.5, 195 + (aim.pitch - aimTab.pitch) * PX * 0.5, { steps: 5 });
+  await page.mouse.move(422 + (aim.yaw - aimTab.yaw) * PX, 195 + (aim.pitch - aimTab.pitch) * PX, { steps: 5 });
   await page.mouse.up();
   await page.screenshot({ path: path.join(OUT, 'a-06-gaze-menu.png') });
-  await page.waitForFunction(() => !window.__ws.headset.active, null, { timeout: 5000 }).catch(() => {});
-  check('視線盯著「離開」1.5 秒 → 離開眼鏡模式', !(await page.evaluate(() => window.__ws.headset.active)), `head ${hs}`);
+  await page.waitForFunction(() => !window.__ws.headset.active, null, { timeout: 6000 }).catch(() => {});
+  check('視線盯著「☰ 選單」展開、再盯著「✕ 離開」1.5 秒 → 離開眼鏡模式', opened && !(await page.evaluate(() => window.__ws.headset.active)), `head ${hs}；展開 ${opened}`);
   await page.evaluate(() => window.__ws.saveNow());
   await page.reload();
   await page.waitForFunction(() => window.__ws?.loaded && window.__ws.instances.size > 0);
