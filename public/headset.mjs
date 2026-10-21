@@ -197,6 +197,7 @@ export function createHeadset({ THREE, renderer, scene, camera, controls, phys, 
   let lastObsT = -Infinity;
   let lastEmptyT = -Infinity;
   let syntheticUntil = 0;
+  let lastUpdateT = 0;
   let lastOut = null;
   let lastHands = [];
   let handSeenAt = -Infinity;
@@ -297,11 +298,16 @@ export function createHeadset({ THREE, renderer, scene, camera, controls, phys, 
     lastOut = out;
     if (!r.empty) stats.results += 1;
     for (const ev of out.events) stats.events[ev.type] = (stats.events[ev.type] || 0) + 1;
+    // 同一筆結果裡可能「舊的手追丟→找到新的一隻」：先把舊手收掉，再放新手（不然新手的位置會被清掉一格）；
+    // 新的一隻手的射線從它現在的位置開始，不從舊手那裡滑過來（濾波重來）
+    const gone = (ev) => ev.type === 'lost' || ev.type === 'cancel';
+    for (const ev of out.events) if (gone(ev)) onGesture(ev);
+    if (out.events.some((ev) => ev.type === 'acquire')) resetAim();
     if (out.hand) {
       placeHand(out.hand, r.headQ || qHead, r.t);
       handSeenAt = now();
     } else if (!out.primaryId) dropHand();
-    for (const ev of out.events) onGesture(ev);
+    for (const ev of out.events) if (!gone(ev)) onGesture(ev);
     if (!r.empty && hud && tracker.video) hud.drawPreview(tracker.video, lastHands, { mirror: settings.cam.mirror });
   }
 
@@ -312,6 +318,10 @@ export function createHeadset({ THREE, renderer, scene, camera, controls, phys, 
     hover = null;
     menuHit = null;
     padHit = null;
+  }
+  function resetAim() {
+    for (const f of Object.values(filt)) f.reset();
+    rollRaw = null;
   }
 
   function placeHand(hand, q, tMs) {
@@ -697,6 +707,7 @@ export function createHeadset({ THREE, renderer, scene, camera, controls, phys, 
     const perm = head.request();
     active = true;
     enteredAt = now();
+    lastUpdateT = enteredAt;
     stats.enters += 1;
     saved.pos.copy(camera.position);
     saved.quat.copy(camera.quaternion);
@@ -913,6 +924,14 @@ export function createHeadset({ THREE, renderer, scene, camera, controls, phys, 
   function update(dt) {
     if (!active) return;
     const t = now();
+    // 這一頁自己卡住（長任務：進眼鏡、接手時重新載入作品…）的那段時間不算「辨識沒有結果」：那段期間結果送到了也還沒處理，
+    // 卡住結束就會進來。不扣掉的話，連續兩個長任務就會補兩筆「沒看到手」→ 追丟 → 按著的方向鍵、抓著的東西被放掉
+    const stalled = t - lastUpdateT - 100;
+    if (stalled > 0) {
+      lastObsT += stalled;
+      lastEmptyT += stalled;
+    }
+    lastUpdateT = t;
     stats.frames += 1;
     stats.frameMs = stats.frameMs ? stats.frameMs * 0.9 + dt * 1000 * 0.1 : dt * 1000;
     head.tick();

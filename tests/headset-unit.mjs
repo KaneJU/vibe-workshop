@@ -180,6 +180,21 @@ const CAM = { width: 640, height: 480, hfovDeg: 64, rotation: 0, mirror: false }
   g.reset();
   check('暫停後 reset：忘掉主手', g.state().primaryId === null);
 }
+{
+  // 手很快移到按鈕上停住，下一格又隔了 200 ms（主執行緒卡頓、辨識變慢）：照速度預測會衝過頭，但停住的手還是同一隻，捏下去照樣算
+  const g = createGesture();
+  let t = 0;
+  const step = (x, open, dt) => {
+    t += dt;
+    return g.update({ t, hands: [analyzeHand(fakeHand(x, 0.5, 0.25, open), CAM)] });
+  };
+  for (let i = 0; i < 5; i += 1) step(0.3, 1, 70);
+  step(0.45, 1, 50);
+  const stopped = step(0.45, 1, 200);
+  const seen = [];
+  for (let i = 0; i < 3; i += 1) seen.push(...step(0.45, 0.1, 70).events.map((e) => e.type));
+  check('手移動後停住、下一格隔很久：還是同一隻手（不追丟、不重新找），捏下去照樣 pinch-start', stopped.fresh && !stopped.events.length && seen.includes('pinch-start') && !seen.includes('lost'), `停住那格 fresh ${stopped.fresh}；之後 ${seen.join(',')}`);
+}
 
 // ---------------- 鏡頭／模型錯誤路徑 ----------------
 {

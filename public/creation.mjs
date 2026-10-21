@@ -85,7 +85,7 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
   let rebuildChain = Promise.resolve(); // 整層重建一次只做一個（接手和同步不會同時重建、重複生出實例）
   const keys = { left: false, right: false, up: false, down: false, action: false };
   const tappedAt = { left: -1e9, right: -1e9, up: -1e9, down: -1e9, action: -1e9 }; // 按下的時間：快速點按也至少算按住 120 ms（沙盒忙的那一步不會吃掉）
-  const stats = { swaps: 0, rejected: 0, rollbacks: 0, reverts: 0, enters: 0, saves: 0, conflicts: 0, placed: 0, resyncs: 0, merges: 0, takeovers: 0, handovers: 0, demotions: 0, reconnects: 0, keyReleases: {}, voiceDropped: {}, ignoredWhileLoading: 0, loadings: {} };
+  const stats = { swaps: 0, rejected: 0, rollbacks: 0, reverts: 0, enters: 0, saves: 0, conflicts: 0, placed: 0, resyncs: 0, restarts: 0, merges: 0, takeovers: 0, handovers: 0, demotions: 0, reconnects: 0, keyReleases: {}, voiceDropped: {}, ignoredWhileLoading: 0, loadings: {} };
   // 多分頁／多瀏覽器同一層：只有「執行者」（拿到 lease 的分頁）在跑作品、存檔；其他的「只看」，跟著伺服器的存檔同步。
   // 要動手（點、按鍵、放作品、換版）就先接手；執行者斷線，lease 到期後別人可以接手。所有變動靠伺服器的 SSE 通知。
   const clientId = uid('tab'); // 每次開頁面一個（複製分頁不會共用）
@@ -257,6 +257,16 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
     host.setTransform(hostId, item.pos, item.rotY || 0);
     if (!r.ok) toast(`⚠️ ${name} v${item.version} 起不來：${r.error}`);
     return r.ok;
+  }
+  // 已經在這一格的同一個版本：從存檔原地重新開始（見 reconcileNow）；不成功就回 false，讓呼叫的人整個重建
+  async function restartItem(L, item) {
+    const { manifest } = await loadPkg(item.lineage, item.version);
+    const r = await host.spawn(L.hostId, L.key, item.state == null ? { params: { seed: Math.floor(Math.random() * 1e9) }, restart: true } : { state: item.state, fromSchema: item.schema ?? manifest.stateSchema, rng: item.rng ?? undefined, restart: true });
+    if (!r.ok) return false;
+    L.item = item;
+    host.setTransform(L.hostId, item.pos, item.rotY || 0);
+    stats.restarts += 1;
+    return true;
   }
   async function placeNew(lineage, version, worldId = world.id) {
     const item = { id: uid('i'), lineage, version, pos: nextSpot(), rotY: 0, state: null, schema: null };
@@ -855,11 +865,14 @@ export function createCreation({ THREE, scene, camera, controls, renderer, toast
         items.push(L.item); // 自己的狀態比伺服器新
         continue;
       }
+      items.push(it);
+      // 同一個版本：在原地照這份存檔重新開始（畫面上的物件沿用）。整個拆掉重建的話材質被釋放、瀏覽器要重新編譯著色器，
+      // 只看的分頁每次跟著存檔同步都會卡好幾百毫秒（軟體繪圖實測每次約 700 ms），戴著眼鏡時連手都追不太到
+      if (L && !L.broken && L.lineage === it.lineage && L.version === it.version && (await restartItem(L, it).catch(() => false))) continue;
       if (L) {
         host.kill(L.hostId);
         live.delete(it.id);
       }
-      items.push(it);
       try {
         await spawnItem(it);
       } catch (e) {

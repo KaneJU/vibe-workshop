@@ -108,7 +108,8 @@ export function INIT() {
         else if (m.type === 'detect') {
           m.bitmap?.close?.();
           const hands = window.__fakeHands.map((h) => ({ lm: new Float32Array(h.lm), world: new Float32Array(h.world), handedness: h.handedness, score: h.score }));
-          setTimeout(() => !w.dead && w.onmessage?.({ data: { type: 'result', seq: m.seq, ms: 2, hands } }), 3);
+          // __fakeHandDelayMs：模擬辨識比較慢（例如軟體繪圖下只有 7 Hz）；手的位置照送出那一格（像真的鏡頭延遲）
+          setTimeout(() => !w.dead && w.onmessage?.({ data: { type: 'result', seq: m.seq, ms: 2, hands } }), window.__fakeHandDelayMs ?? 3);
         }
       },
       terminate() {
@@ -162,6 +163,10 @@ export const HELPERS = `
     const u = 0.5 + px / (2 * intr.tanX * d);
     const v = 0.5 - py / (2 * intr.tanY * d);
     window.__fakeHands = [make(0.5 + (u - a.pinch.x), 0.5 + (v - a.pinch.y))];
+    // 記下最後一次放手的位置（等待逾時時印出來：手是不是放到鏡頭畫面外、被當成低信心）
+    const h = window.__fakeHands[0];
+    const chk = analyzeHand({ ...h, lm: new Float32Array(h.lm), world: new Float32Array(h.world) }, { ...cam, width: 640, height: 480 });
+    window.__lastHandAt = { open, u: +u.toFixed(3), v: +v.toFixed(3), lowConf: !!chk.lowConf, at: Math.round(performance.now()) };
     return { u, v, d };
   };
   // 直接指定捏點在鏡頭畫面上的位置（u、v：0–1）

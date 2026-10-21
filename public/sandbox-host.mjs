@@ -440,8 +440,9 @@ export function createSandboxHost({ THREE, root, doc = globalThis.document, onHu
     const hidden = !!o.hidden;
     const prev = insts.get(instId);
     if (prev && (prev.hidden || hidden || prev.status === 'starting' || prev.swapping)) return { ok: false, error: `實例 ${instId} 已經在使用` };
-    // 同一個版本：只有已經出錯／停止的實例可以重新開始（例如從存檔復原）；正在跑的不能被重設
-    if (prev && prev.pkg === pkgKey && prev.status === 'running') return { ok: false, error: `實例 ${instId} 已經在跑這個版本（要重新開始請先 kill）` };
+    // 同一個版本：只有已經出錯／停止的實例可以重新開始（例如從存檔復原）；正在跑的不能被重設——
+    // 除非明講 restart（只看的分頁照新存檔更新）：在原地從那份存檔重新開始，畫面上的物件沿用（不拆掉重建，不用重新編譯著色器）
+    if (prev && prev.pkg === pkgKey && prev.status === 'running' && o.restart !== true) return { ok: false, error: `實例 ${instId} 已經在跑這個版本（要重新開始請先 kill）` };
     const hasState = o.state !== undefined && o.state !== null;
     let state = null;
     if (hasState) {

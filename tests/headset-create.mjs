@@ -174,7 +174,8 @@ try {
     page.waitForFunction(fn, arg, { timeout: ms }).catch(async (e) => {
       const hs = await H();
       const st = await S();
-      console.log('等待逾時：', JSON.stringify({ world: st.world, role: st.role, connState: st.connState, loading: st.loadingWhy, live: st.live.map((L) => `${L.name}@v${L.version}`), jobs: st.jobs.slice(-3).map((J) => `${J.intent}:${J.status}:${J.kind}`), jobText: await page.evaluate(() => document.querySelector('#cJob .txt')?.textContent) }), '\nheadset：', JSON.stringify({ menuPage: hs.menuPage, menuHover: hs.menuHover, padHover: hs.padHover, padHold: hs.padHold, hover: hs.hover, handOn: hs.handOn, gesture: hs.gesture, lastHand: hs.lastHand, menuFocus: hs.menuFocus, tracker: hs.tracker.state, events: hs.stats.events, menu: hs.stats.menu }), '\nconnector：', JSON.stringify(handled).slice(0, 600), '\n錯誤：', errors.slice(0, 5).join(' | '));
+      console.log('等待逾時：', JSON.stringify({ world: st.world, role: st.role, connState: st.connState, loading: st.loadingWhy, live: st.live.map((L) => `${L.name}@v${L.version}`), jobs: st.jobs.slice(-3).map((J) => `${J.intent}:${J.status}:${J.kind}`), jobText: await page.evaluate(() => document.querySelector('#cJob .txt')?.textContent) }), '\nheadset：', JSON.stringify({ menuPage: hs.menuPage, menuHover: hs.menuHover, padHover: hs.padHover, padHold: hs.padHold, hover: hs.hover, handOn: hs.handOn, gesture: hs.gesture, lastHand: hs.lastHand, menuFocus: hs.menuFocus, menuOpen: hs.menuOpen, tracker: hs.tracker, video: hs.video, liveTracks: hs.liveTracks, events: hs.stats.events, menu: hs.stats.menu, eye: hs.eye, cameraQuat: hs.cameraQuat }),
+        '\n手：', JSON.stringify(await page.evaluate(() => ({ last: window.__lastHandAt, fake: window.__fakeHands.length, now: Math.round(performance.now()), visibility: document.visibilityState, hasFocus: document.hasFocus() }))), '\nconnector：', JSON.stringify(handled).slice(0, 600), '\n錯誤：', errors.slice(0, 5).join(' | '));
       throw e;
     });
   const frames = (n = 3) => page.evaluate((k) => window.__frames(k), n);
@@ -194,6 +195,46 @@ try {
       [uv.u, uv.v, expect],
       8000,
     );
+  // 手移到新位置（uv＝__handAt 回傳的畫面位置）之後每 25 ms 記一次，直到新位置被追到、指到 id 再穩 300 ms（或 ms 到）：
+  // [經過 ms, 手勢狀態, 追丟次數, 重新找到次數, 收到幾筆辨識, 新位置被追到了沒, 有沒有手, 射線和目標方向的夾角°, 有沒有指到]
+  // 用來分辨「射線算錯」（停穩了還差很多）和「還沒追上」（還沒看到新位置／夾角一直在縮小）
+  const aimTimeline = (target, id, uv, ms = 3000) =>
+    page.evaluate(async ([tw, hid, u, v, lim]) => {
+      const THREE = window.__ws.THREE;
+      const hs = window.__ws.headset;
+      const s0 = hs.state();
+      const ev0 = { ...s0.stats.events };
+      const res0 = s0.tracker.results;
+      const t0 = performance.now();
+      const rows = [];
+      let firstHover = null;
+      for (;;) {
+        const st = hs.state();
+        const t = Math.round(performance.now() - t0);
+        const p = st.lastHand?.pinch;
+        const fresh = !!(p && Math.abs(p.x - u) < 0.02 && Math.abs(p.y - v) < 0.02);
+        let err = null;
+        if (st.pinch) {
+          const eye = new THREE.Vector3().fromArray(st.eye);
+          const a = new THREE.Vector3().fromArray(st.pinch).sub(eye).normalize();
+          err = +THREE.MathUtils.radToDeg(a.angleTo(new THREE.Vector3().fromArray(tw).sub(eye).normalize())).toFixed(2);
+        }
+        const on = fresh && st.handOn && st.hover === hid;
+        rows.push([t, st.gesture.status, (st.stats.events.lost || 0) - (ev0.lost || 0), (st.stats.events.acquire || 0) - (ev0.acquire || 0), st.tracker.results - res0, fresh ? 1 : 0, st.handOn ? 1 : 0, err, on ? 1 : 0]);
+        if (on && firstHover === null) firstHover = t;
+        if ((firstHover !== null && t - firstHover > 300) || t > lim) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      const last = rows[rows.length - 1];
+      const at400 = rows.filter((r) => r[0] <= 400).pop() || rows[0];
+      const firstFresh = rows.find((r) => r[5])?.[0] ?? null;
+      // 重新找到手的那一格：新手要馬上有射線（不被同一筆的「追丟」清掉）、而且從它自己的位置開始（不從舊手滑過來）
+      const re = rows.find((r) => r[3] >= 1 && r[5]);
+      const reacquire = re ? { t: re[0], handOn: !!re[6], err: re[7] } : null;
+      return { firstHover, firstFresh, hz: hs.state().tracker.hz, settledErr: last[7], at400: { hover: !!at400[8], fresh: !!at400[5], handOn: !!at400[6], err: at400[7], results: at400[4] }, lost: last[2], acquire: last[3], reacquire, rows };
+    }, [target, id, uv.u, uv.v, ms]);
+  const aimText = (a) =>
+    `新位置第 ${a.firstFresh ?? '—'} ms 被追到、第 ${a.firstHover ?? '—'} ms 指到（辨識 ${a.hz} Hz；追丟 ${a.lost}、重新找到 ${a.acquire} 次${a.reacquire ? `，重新找到那一格有手 ${a.reacquire.handOn}、夾角 ${a.reacquire.err}°` : ''}）；400 ms 時${a.at400.hover ? '已' : '還沒'}指到（新位置${a.at400.fresh ? '已' : '還沒'}追到、有手 ${a.at400.handOn}、夾角 ${a.at400.err}°、收到 ${a.at400.results} 筆）；最後夾角 ${a.settledErr}°`;
   async function press(target, extra, expect = null) {
     await tracked(await handAt(1, target, extra), expect);
     const n = (await H()).stats.events['pinch-start'] || 0;
@@ -235,8 +276,10 @@ try {
     return p;
   }
   const lookAtItem = async (hostId, ent) => lookAt(await page.evaluate(([h, e]) => window.__entityPos(h, e), [hostId, ent]));
+  // 跟使用者一樣從畫面上的按鈕進（🥽 → 開始；裝盒前檢查那張卡），不直接呼叫 enter()
   const enterHeadset = async () => {
-    await page.evaluate(() => window.__ws.headset.enter());
+    await page.locator('#hsBtn').click();
+    await page.locator('#hsGo').click();
     await page.evaluate(() => window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', (window.__sensor = { alpha: 0, beta: 90, gamma: 0 }))));
     await until(() => window.__ws.headset.state().active && window.__ws.headset.state().tracker.state === 'running', null, 10000);
     await page.evaluate(() => window.__noHand());
@@ -398,10 +441,22 @@ try {
     await until((w) => window.__ws.creation.state().world.id === w && !window.__ws.creation.state().loading, kid);
     await page.evaluate(() => window.__say('做一個點球', true));
     await until(() => window.__ws.creation.state().jobs.at(-1).status === 'built', null, 20000);
-    await sleep(600);
+    // 工作一變成 built 畫面就看得到，之後才取作品庫、把作品送進根世界（onBuilt → placeNew）：照伺服器上的數量等它放進去（最多 10 秒），
+    // 不固定等 600 ms（審查環境負載高時 600 ms 不夠，2cfc2c7 的獨立驗收出現過「根 2→2」）
     const jw = (await S()).jobs.at(-1);
+    const placed = await page.evaluate(async (n0) => {
+      const t0 = performance.now();
+      let n = n0;
+      while (performance.now() - t0 < 10000) {
+        n = (await (await fetch('/api/cworlds/root')).json()).world.items.length;
+        if (n !== n0) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return { n, ms: Math.round(performance.now() - t0) };
+    }, rootItems0);
+    await sleep(300); // 放進去之後再看一下：不會多放一個、子世界也不會多
     const rootItems1 = await page.evaluate(async () => (await (await fetch('/api/cworlds/root')).json()).world.items.length);
-    check('說到一半進子世界：新作品放回開口時的根世界（子世界沒有多東西）', jw.worldId === 'root' && rootItems1 === rootItems0 + 1 && (await S()).live.length === 0, `job ${jw.worldId}；根 ${rootItems0}→${rootItems1}；子世界 ${(await S()).live.length}`);
+    check('說到一半進子世界：新作品放回開口時的根世界（子世界沒有多東西）', jw.worldId === 'root' && placed.n === rootItems0 + 1 && rootItems1 === rootItems0 + 1 && (await S()).live.length === 0, `job ${jw.worldId}；根 ${rootItems0}→${rootItems1}（built 之後 ${placed.ms} ms 放進去）；子世界 ${(await S()).live.length}`);
     await page.evaluate(() => window.__ws.creation.goUp());
     await until(() => window.__ws.creation.state().world.id === 'root' && !window.__ws.creation.state().loading);
     await exitHeadset();
@@ -580,12 +635,45 @@ try {
 
   // ======================= F 方向鍵 =======================
   if (SECTIONS.has('F')) {
+    // 同場景證據（每一步記一次）：按鍵、執行權／載入中、runner 的實例狀態與累積時間 t（有在跑就會一直加）、看門狗逾時數、
+    // 方塊位置、眼鏡裡看到的 HUD、伺服器上的存檔（leader 每幾秒存一次，會落後一點）
+    const fTrace = (report.notes.fTrace = []);
+    const trace = async (label, pg = page) => {
+      const row = await pg.evaluate(async ([id, lb]) => {
+        const c = window.__ws.creation;
+        const s = c.state();
+        const L = s.live.find((x) => x.id === id);
+        const inst = c.host().instances().find((i) => i.id === L?.hostId);
+        let saved = null;
+        try {
+          const w = (await (await fetch(`/api/cworlds/${s.world.id}`)).json()).world;
+          const st = w.items.find((it) => it.id === id)?.state;
+          saved = st ? { x: st.x, keys: st.keys, act: st.act } : null;
+        } catch {
+          saved = 'read-failed';
+        }
+        return {
+          label: lb, at: Math.round(performance.now()), role: s.role, loading: s.loadingWhy || (s.loading ? 'yes' : ''), keys: Object.entries(s.keys).filter(([, v]) => v).map(([k]) => k).join('+') || '-',
+          inst: inst ? { status: inst.status, t: +inst.t.toFixed(2), error: inst.error || '' } : null, timeouts: s.host?.timeouts ?? null, workers: s.host?.workers ?? null,
+          hud: L?.hud.join(' ') || '', headsetHud: (c.headsetGame() || []).join(' / '), saved, saves: s.stats.saves,
+        };
+      }, [cubeId, label]);
+      fTrace.push(row);
+      return row;
+    };
     await enterHeadset();
     await page.evaluate((id) => window.__ws.creation.select(id), cubeId);
     check('方向鍵一開始是收起來的', !(await H()).padVisible);
     await pressMenu('sys:pad');
     await lookAtItem(await cubeHost(), 'cube');
     await until(() => window.__ws.headset.state().padShown, null, 5000);
+    // 前提：方塊真的在這個分頁的 runner 裡跑（leader、沒在載入、實例 running、看門狗沒停過任何作品）——否則後面「不會動」不是方向鍵的問題
+    const f0 = await trace('F 開始');
+    await sleep(300);
+    const fT0 = await trace('F 開始＋0.3 秒');
+    check('F 前提：方塊在這個分頁的 runner 裡跑著（leader、沒在載入、實例 running、累積時間在加、看門狗 0 次逾時）',
+      f0.role === 'leader' && !f0.loading && f0.inst?.status === 'running' && fT0.inst?.t > f0.inst.t && f0.timeouts === 0,
+      `${f0.role} 載入「${f0.loading}」 ${JSON.stringify(f0.inst)} → t ${fT0.inst?.t}；逾時 ${f0.timeouts}；HUD ${f0.hud}`);
     const padPos = (k) => page.evaluate((x) => window.__padPos(x), k);
     const menuOpacity = await page.evaluate(() => {
       const ops = [];
@@ -597,6 +685,30 @@ try {
       await press(await padPos(k), undefined, { padHover: k });
       await until((x) => window.__ws.headset.state().padHold === x, k, 4000);
     };
+    // 按著 key 的期間，等作品 HUD 上的 x 走了 dx（最多 5 秒）；記下牆鐘時間、這個實例在 runner 裡前進的時間 t（作品自己的時間）、
+    // 期間按鍵有沒有一直是這一個（不會跳回別的鍵）。dx 照作品的速度（每秒 1.5）換算，大約是 0.2 秒的作品時間
+    const moveWhileHeld = (key, dx) =>
+      page.evaluate(async ([id, k, d]) => {
+        const c = window.__ws.creation;
+        const xOf = () => Number((c.state().live.find((L) => L.id === id)?.hud[0] || '').match(/x (-?[\d.]+)/)?.[1]);
+        const tOf = () => c.host().instances().find((i) => i.id === c.state().live.find((L) => L.id === id)?.hostId)?.t ?? NaN;
+        const x0 = xOf();
+        const t0 = tOf();
+        const w0 = performance.now();
+        let other = 0;
+        let x = x0;
+        while (performance.now() - w0 < 5000) {
+          const keys = c.state().keys;
+          if (!keys[k] || Object.entries(keys).some(([n, v]) => v && n !== k)) other += 1;
+          x = xOf();
+          if (d < 0 ? x <= x0 + d : x >= x0 + d) break;
+          await new Promise((r) => setTimeout(r, 30));
+        }
+        const ms = Math.round(performance.now() - w0);
+        const simT = +(tOf() - t0).toFixed(2);
+        const ok = (d < 0 ? x <= x0 + d : x >= x0 + d) && other === 0;
+        return { ok, ms, simT, other, text: `按著 ${ms} ms 走了 ${(x - x0).toFixed(2)}；作品時間 +${simT} s${other ? `；期間按鍵不對 ${other} 次` : ''}` };
+      }, [cubeId, key, dx]);
     // 捏住「◀ 左」→ 按住
     const x0 = await cubeX();
     await handAt(1, await padPos('left'));
@@ -604,25 +716,29 @@ try {
     check('手指著「◀ 左」：提示捏住＝按住', (await H()).padHover === 'left');
     await shot('f1-pad-hover.png');
     await holdPad('left');
-    await sleep(700);
+    // 按住期間照狀態等方塊走 0.3（最多 5 秒）：機器忙的時候同樣的牆鐘時間裡作品跑得比較少步，不用固定秒數判斷
+    const mvL = await moveWhileHeld('left', -0.3);
     const kHeld = (await S()).keys;
     const x1 = await cubeX();
-    check('捏住「◀ 左」＝按住左：方塊往左走', kHeld.left && x1 < x0 - 0.3, `x ${x0} → ${x1}；keys ${JSON.stringify(kHeld)}`);
+    await trace('捏住「◀ 左」走了 0.3');
+    check('捏住「◀ 左」＝按住左：方塊往左走', kHeld.left && x1 < x0 - 0.3 && mvL.ok, `x ${x0} → ${x1}（${mvL.text}）；keys ${JSON.stringify(kHeld)}`);
     await shot('f2-pad-hold-left.png');
     // 捏著慢慢滑到「右 ▶」（經過中間的 ⚡＝暫時不按）→ 換成右
     await slide(await padPos('left'), await padPos('right'), { steps: 8 });
     await until(() => window.__ws.headset.state().padHold === 'right', null, 4000);
     const xr = await cubeX();
-    await sleep(600);
+    const mvR = await moveWhileHeld('right', 0.3);
     const kSlide = (await S()).keys;
     const x2 = await cubeX();
-    check('捏著滑到「右 ▶」：換成按右（左放開；滑過中間的 ⚡ 沒按到動作）', kSlide.right && !kSlide.left && x2 > xr + 0.3 && !/動作 [1-9]/.test(await cubeHud()), `換到右時 x ${xr} → ${x2}；${await cubeHud()}`);
+    await trace('捏著滑到「右 ▶」走了 0.3');
+    check('捏著滑到「右 ▶」：換成按右（左放開；滑過中間的 ⚡ 沒按到動作）', kSlide.right && !kSlide.left && x2 > xr + 0.29 && mvR.ok && !/動作 [1-9]/.test(await cubeHud()), `換到右時 x ${xr} → ${x2}（${mvR.text}）；${await cubeHud()}`);
     // 張開手 → 放開
     await openHand(await padPos('right'));
     await sleep(100);
     const kOpen = (await S()).keys;
     const x3 = await cubeX();
     await sleep(500);
+    await trace('張開手 0.5 秒');
     check('張開手指：全部放開、方塊停住', !Object.values(kOpen).some(Boolean) && Math.abs((await cubeX()) - x3) < 0.02, JSON.stringify(kOpen));
     // 捏著滑出方向鍵：放開
     await holdPad('left');
@@ -635,7 +751,33 @@ try {
     const act0 = Number((await cubeHud()).match(/動作 (\d+)/)[1]);
     await pinchAt(await padPos('action'), { expect: { padHover: 'action' } });
     await sleep(300);
+    await trace('捏一下「⚡ 動作」');
     check('捏一下「⚡ 動作」＝按一下動作鍵', Number((await cubeHud()).match(/動作 (\d+)/)[1]) === act0 + 1, await cubeHud());
+    // 主執行緒連續卡住兩次（接手時重新載入作品實測 984＋859 ms），而且這段期間辨識結果都還沒回來（假辨識延遲 3 秒）：
+    // 手其實一直在，按著的鍵不能被當成追丟放掉——卡住的時間不算「沒看到手」
+    await holdPad('left');
+    const stallLost0 = (await H()).stats.pad.releases.lost || 0;
+    const sent0 = (await H()).tracker.framesSent;
+    await page.evaluate(() => (window.__fakeHandDelayMs = 3000));
+    await until((n) => window.__ws.headset.state().tracker.framesSent > n, sent0, 3000); // 下一筆辨識（3 秒才回）已經送出
+    const stallRes = await page.evaluate(async () => {
+      const busy = (ms) => {
+        const t = performance.now();
+        while (performance.now() - t < ms) { /* 長任務 */ }
+      };
+      const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+      busy(900);
+      await frame();
+      busy(900);
+      await frame();
+      await frame();
+      const st = window.__ws.headset.state();
+      return { left: window.__ws.creation.state().keys.left, padHold: st.padHold, lost: st.stats.pad.releases.lost || 0, status: st.gesture.status };
+    });
+    await page.evaluate(() => (window.__fakeHandDelayMs = 3));
+    check('主執行緒連續卡住兩次（各 0.9 秒、期間辨識結果還沒回來）：手一直在，按著的「◀ 左」不會被當成追丟放開', stallRes.left && stallRes.padHold === 'left' && stallRes.lost === stallLost0, JSON.stringify(stallRes));
+    await openHand(await padPos('left'));
+    await until(() => !window.__ws.headset.state().padHold && !window.__ws.creation.state().keys.left, null, 8000);
     // 追丟：按住左 → 手不見 → 寬限後放開
     await holdPad('left');
     const lostHeld = (await S()).keys.left;
@@ -644,6 +786,7 @@ try {
     const kLost = (await S()).keys;
     const xl = await cubeX();
     await sleep(500);
+    await trace('按住左時追丟手');
     check('按住左時追丟手：寬限過後放開，方塊不會一直走', lostHeld && !kLost.left && Math.abs((await cubeX()) - xl) < 0.02 && (await H()).stats.pad.releases.lost >= 1, JSON.stringify((await H()).stats.pad.releases));
     await sleep(400);
     // 離開眼鏡時正按著 → 放開
@@ -652,6 +795,7 @@ try {
     await page.keyboard.press('Escape');
     await until(() => !window.__ws.headset.active);
     const kExit = (await S()).keys;
+    await trace('按住左時離開眼鏡');
     check('按住左時離開眼鏡：全部放開', heldBeforeExit && !Object.values(kExit).some(Boolean), JSON.stringify(kExit));
     // 切到背景時按著 → 放開；換層時按著 → 放開
     await enterHeadset();
@@ -700,18 +844,51 @@ try {
     await until(() => window.__ws.creation.state().role === 'follower', null, 10000);
     await enterHeadset();
     await page.evaluate((id) => window.__ws.creation.select(id), cubeId);
+    // 只看的分頁戴著眼鏡：另一個分頁每 1.5 秒存一次，這邊跟著同步——版本沒變的作品要在原地照存檔更新（不新建畫面物件），
+    // 不然每次都整個拆掉重建、重新編譯著色器（軟體繪圖下每次卡約 700 ms，畫面剩 5 fps、手追不到）
+    const probe = await page.evaluate(async () => {
+      const hs = window.__ws.headset;
+      const c = window.__ws.creation;
+      const lt = [];
+      let ob = null;
+      if (PerformanceObserver.supportedEntryTypes?.includes('longtask')) {
+        ob = new PerformanceObserver((l) => { for (const e of l.getEntries()) lt.push([Math.round(e.startTime), Math.round(e.duration)]); });
+        ob.observe({ type: 'longtask' });
+      }
+      const s0 = hs.state().tracker;
+      const c0 = c.state();
+      const t0 = performance.now();
+      let frames = 0;
+      await new Promise((res) => {
+        const f = () => {
+          frames += 1;
+          if (performance.now() - t0 < 5000) requestAnimationFrame(f);
+          else res();
+        };
+        requestAnimationFrame(f);
+      });
+      ob?.disconnect();
+      const s1 = hs.state().tracker;
+      const c1 = c.state();
+      return { role: c1.role, frames, results: s1.results - s0.results, stale: s1.stale - s0.stale, resyncs: c1.stats.resyncs - c0.stats.resyncs, restarts: c1.stats.restarts - c0.stats.restarts, meshesCreated: c1.host.createdMeshes - c0.host.createdMeshes, items: c1.live.length, longTasks: ob ? lt : 'unsupported' };
+    });
+    report.notes.followerProbe = probe;
+    check('只看的分頁戴著眼鏡跟著存檔同步：版本沒變的作品原地照存檔更新（不新建畫面物件、不整個重建）', probe.role === 'follower' && probe.resyncs >= 1 && probe.restarts > 0 && probe.restarts >= (probe.resyncs - 1) * probe.items && probe.meshesCreated === 0,
+      `5 秒內同步 ${probe.resyncs} 次、原地更新 ${probe.restarts} 件、新建 mesh ${probe.meshesCreated}；畫面 ${probe.frames} 格、辨識 ${probe.results} 筆（過期 ${probe.stale}）；長任務 ${JSON.stringify(probe.longTasks)}`);
     await pressMenu('sys:pad');
     await lookAtItem(await cubeHost(), 'cube');
     await until(() => window.__ws.headset.state().padShown, null, 5000);
     const fx0 = await page2.evaluate((id) => Number(window.__ws.creation.state().live.find((L) => L.id === id).hud[0].match(/x (-?[\d.]+)/)[1]), cubeId);
     const roleBefore = (await S()).role;
     const tk0 = (await S()).stats.loadings.takeover || 0;
+    await trace('只看的分頁：接手前');
     await press(await padPos('right'), undefined, { padHover: 'right' });
     await until(() => window.__ws.creation.state().role === 'leader' && !window.__ws.creation.state().loading, null, 15000);
     // 按著的方向在接手完成後照著動（兩個分頁＋雙眼在軟體繪圖下很慢：等它真的動，不靠固定秒數）
     await until(([id, x0]) => Number(window.__ws.creation.state().live.find((L) => L.id === id)?.hud[0].match(/x (-?[\d.]+)/)?.[1]) > x0 + 0.2, [cubeId, fx0], 10000).catch(() => {});
     const tk1 = (await S()).stats.loadings.takeover || 0;
     const fx1 = await cubeX();
+    await trace('只看的分頁：按住右接手後');
     await openHand(await padPos('right'));
     check('只看的分頁在眼鏡裡按住「右 ▶」＝接手：接手時標「接手中」（載入狀態），接手完照按住的方向動（從最新存檔接著），放開就停', roleBefore === 'follower' && tk1 === tk0 + 1 && fx1 > fx0 + 0.2 && !(await S()).keys.right, `接手 ${tk0} → ${tk1}；x ${fx0} → ${fx1}；keys ${JSON.stringify((await S()).keys)}；放開 ${JSON.stringify((await S()).stats.keyReleases)}／${JSON.stringify((await H()).stats.pad.releases)}`);
     await page.evaluate(() => window.__noHand());
@@ -726,6 +903,9 @@ try {
     await exitHeadset();
     await page2.close();
     await until(() => window.__ws.creation.state().role === 'leader', null, 15000);
+    const fEnd = await trace('F 結束');
+    const fDead = fTrace.filter((r) => r.inst && r.inst.status !== 'running');
+    check('F 全程：方塊沒有被看門狗停掉（每一步實例都 running、這個分頁的逾時 0）', !fDead.length && fEnd.timeouts === 0, fDead.length ? JSON.stringify(fDead[0]) : `${fTrace.length} 步都 running；逾時 ${fEnd.timeouts}`);
   }
 
   // ======================= G 真生成過的接星星 =======================
@@ -747,6 +927,8 @@ try {
       const t0 = Date.now();
       let moves = 0;
       let sMove = null; // 第一次用方向鍵時的分數：之後還要再接到星星才算（星星剛好掉進原地的籃子不算）
+      const trail = [];
+      (report.notes.catchTrail ??= {})[label] = trail;
       while (Date.now() - t0 < 45000 && !(sMove != null && (await scoreOf()) > sMove)) {
         const hud = await hudOf();
         if (/遊戲結束/.test(hud.join(' '))) {
@@ -764,6 +946,9 @@ try {
         stars.sort((a, b) => a.pos[1] - b.pos[1]);
         const dx = stars[0].pos[0] - basket[0];
         const want = Math.abs(dx) < 0.12 ? null : dx < 0 ? 'left' : 'right';
+        // 記錄（沒接到時查得到原因）：經過秒數、籃子 x、最低那顆星 x／y、想按的鍵、現在按著的鍵、HUD 第一行
+        trail.push([((Date.now() - t0) / 1000).toFixed(1), +basket[0].toFixed(2), +stars[0].pos[0].toFixed(2), +stars[0].pos[1].toFixed(2), want || '-', cur || '-', hud[0] || '']);
+        if (trail.length > 80) trail.shift();
         if (!pinched) {
           if (want) {
             await press(await padP(want), undefined, { padHover: want }); // 捏住方向鍵
@@ -1017,15 +1202,36 @@ try {
     const orb = (await S()).live[0];
     const ent = orb.name === '點球' ? 'orb' : orb.name === '方向方塊' ? 'cube' : 'b0';
     await lookAtItem(orb.hostId, ent);
-    await handAt(1, await page.evaluate(([h, e]) => window.__entityPos(h, e), [orb.hostId, ent]));
-    await sleep(400);
-    check('鏡頭前後 12 公分、上 3 公分：手指著作品照樣指得到（射線用新的鏡頭位置）', (await H()).hover === orb.hostId, `hover ${(await H()).hover}`);
+    const orbPos = await page.evaluate(([h, e]) => window.__entityPos(h, e), [orb.hostId, ent]);
+    const orbUv = await handAt(1, orbPos);
+    // 不固定等 400 ms：記下射線一路怎麼追上（辨識慢的時候 400 ms 可能還沒追上，那是延遲、不是偏移算錯）
+    const aim = await aimTimeline(orbPos, orb.hostId, orbUv);
+    report.notes.kAim = aim;
+    const reacqOk = (a) => a.acquire === 0 || (a.reacquire?.handOn && a.reacquire.err < 0.5);
+    check('鏡頭前後 12 公分、上 3 公分：手指著作品照樣指得到（射線用新的鏡頭位置；停穩後夾角 < 0.5°）', aim.firstHover !== null && aim.settledErr < 0.5 && reacqOk(aim), aimText(aim));
+    // 辨識降到約 7 Hz（審查環境量到的速度）：手先移到旁邊（被追到），再一下跳回作品——
+    // 跳太遠時狀態機當成新的一隻手（追丟寬限 300 ms 後重新找到），射線要等那之後才會指到
+    const side = await page.evaluate(([p]) => {
+      const THREE = window.__ws.THREE;
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(window.__ws.camera.quaternion);
+      return new THREE.Vector3().fromArray(p).addScaledVector(right, 0.9).toArray();
+    }, [orbPos]);
+    await tracked(await handAt(1, side));
+    await page.evaluate(() => (window.__fakeHandDelayMs = 140));
+    await sleep(500);
+    const slow = await aimTimeline(orbPos, orb.hostId, await handAt(1, orbPos), 4000);
+    await page.evaluate(() => (window.__fakeHandDelayMs = 3));
+    report.notes.kAimSlow = slow;
+    check('辨識只有約 7 Hz、手一下跳回作品：重新找到手的那一格就有射線、從新位置開始（夾角 < 0.5°），3 秒內指到', slow.acquire >= 1 && reacqOk(slow) && slow.firstHover !== null && slow.firstHover < 3000 && slow.settledErr < 0.5, aimText(slow));
     await page.evaluate(() => window.__ws.headset.setSettings({ cam: { offsetX: 0, offsetY: 0, offsetZ: 0.07 } }));
     await page.evaluate(() => window.__ws.creation.goUp());
     await until(() => window.__ws.creation.state().world.id === 'root' && !window.__ws.creation.state().loading);
     await exitHeadset();
   }
 
+  // 這個測試的作品都不會卡住：看門狗要是停過任何一個，就是誤判（主執行緒被長任務卡住時，準時的回覆還在排隊）
+  const hostEnd = (await S()).host;
+  check('整段沒有作品被看門狗停掉（這個分頁的逾時 0）', hostEnd?.timeouts === 0, JSON.stringify(hostEnd));
   check('頁面沒有錯誤', errors.length === 0, errors.slice(0, 4).join(' | '));
   check('眼鏡流程中沒有跳出任何打字視窗', dialogs.length === 0, JSON.stringify(dialogs));
 } catch (e) {

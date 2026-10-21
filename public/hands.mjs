@@ -212,7 +212,9 @@ export function createGesture(options = {}) {
       const py = primary.palm.y + primary.vel.y * dt;
       let best = Infinity;
       for (const h of hands) {
-        const d = Math.hypot(h.palm.x - px, h.palm.y - py);
+        // 離「照速度預測的位置」或「上一次的位置」近的都算：手移動後突然停住、下一格又隔比較久（卡頓、辨識變慢）時，
+        // 預測會衝過頭，停住的手不能因此被當成另一隻（那樣捏下去會被擋成「先把手張開」）
+        const d = Math.min(Math.hypot(h.palm.x - px, h.palm.y - py), Math.hypot(h.palm.x - primary.palm.x, h.palm.y - primary.palm.y));
         if (d < best) {
           best = d;
           match = h;

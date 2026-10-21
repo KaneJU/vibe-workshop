@@ -263,7 +263,7 @@ npm run test:headset     # 眼鏡模式：雙眼與轉頭、手勢狀態機（�
 npm run test:headset-create   # 戴著創作（Chromium；BROWSER=webkit 跑子集）：新作品／修改語意、說到一半換層換選取、取消去重、離開與切背景、選單捏合不穿透、方向鍵與接手、真生成過的作品用方向鍵玩、A→B→C、反覆進出清理、裝盒前檢查、對位（合成手部關鍵點與辨識事件，不叫 Codex）
 REAL_CODEX=1 npm run test:headset-real   # 戴著用你自己已登入的 Codex 真的做一個作品、用方向鍵玩、再改它（會用 Codex 額度）
 npm run test:flash       # 開火閃光在畫面上的大小（不用開伺服器；tests/flash-probe.mjs 在真的遊戲房裡量）
-npm run test:creation    # 創作世界：伺服器協定（兩位隔離 fixture 創作者、Deno 影子試跑）、瀏覽器沙盒、端到端（換版、退回、A→B→C、深鏈與一層一層返回、同一層多分頁（含觸控接手）、語音合成事件）；都自己開 127.0.0.1 的伺服器，不叫 Codex
+npm run test:creation    # 創作世界：伺服器協定（兩位隔離 fixture 創作者、Deno 影子試跑）、瀏覽器沙盒（含頁面主執行緒被長任務卡住，Chromium＋WebKit）、端到端（換版、退回、A→B→C、深鏈與一層一層返回、同一層多分頁（含觸控接手）、語音合成事件）；都自己開 127.0.0.1 的伺服器，不叫 Codex
 
 # 新手教學與遊戲房：各用一個丟棄式資料夾、只聽 127.0.0.1（CODEX_BIN 故意指到不存在的地方）
 DATA_DIR=/tmp/vw-adv-data PORT=5312 HOST=127.0.0.1 CODEX_BIN=/nonexistent/codex npm start &

@@ -17,6 +17,7 @@
 //   只轉送屬於那個 Worker 的實例、格式不對的欄位丟掉；送出不認得的訊息就把整個 Worker 停掉。
 // - 看門狗：每個 Worker 同時最多一個 tick 在途；請求超過時限沒回就 terminate() 那個 Worker，通知父頁 { type: 'timeout', pkg, insts }。
 //   除了計時器，父頁每送一則訊息進來也會順便檢查一次（計時器在隱藏的 iframe 裡可能被瀏覽器放慢）。
+//   時限到了先繞事件迴圈一圈確認才停（見 overdue）：主執行緒被長任務卡住時，準時送來的回覆可能還排在後面。
 // 注意：這段程式裡不能出現 script 結束標籤或 HTML 註解開頭的字樣（伺服器用 regex 切出內容算 CSP 雜湊，HTML 解析也會出錯）。
 (function () {
   'use strict';
@@ -548,6 +549,21 @@
 
   // ---------------- 每個 Worker 的請求佇列與看門狗 ----------------
   // Worker 依序處理、依序回覆：回覆一定要對上佇列最前面那個請求的 id。時限從「輪到它」開始算。
+  //
+  // 時限到了不馬上停：先從這頁自己的 MessageChannel 送一則確認訊息，輪到它時最前面的還是同一個請求才停。
+  // 這頁可能和父頁共用主執行緒（Safari 一定是），父頁一個長任務（例如進眼鏡時編譯著色器）卡住的期間，Worker 準時送來的回覆
+  // 進不來，會排在父頁長任務之前送進來的訊息後面；父頁訊息一進來就看時間，會把準時回覆的作品誤判成逾時（實測 80 ms 就回覆、
+  // 父頁卡 600 ms 就被停掉）。確認訊息和 Worker 回覆是同一種工作來源（posted message），在佇列裡排在已經送到的回覆後面。
+  const confirmChannel = new MessageChannel();
+  const confirming = new Map(); // 確認序號 → { rec, head }
+  let confirmSeq = 0;
+  confirmChannel.port1.onmessage = (e) => {
+    const c = confirming.get(e.data);
+    confirming.delete(e.data);
+    if (!c || c.rec.dead || c.rec.queue[0] !== c.head) return; // 回覆在確認之前就處理了
+    if (!c.rec.ready) return finishLoad(c.rec, false, '作品程式載入逾時（最外層的程式跑太久或卡住）');
+    stop(c.rec, 'timeout', `作品 ${c.head.budget} ms 內沒有回應（可能是無限迴圈或一步算太久），已停止`);
+  };
   function request(rec, msg, budget, done) {
     // 排了這麼多還沒處理完＝作品跟不上，跟逾時一樣整個停掉（正常不會發生：最前面那個早就逾時了）
     if (!rec.dead && rec.queue.length >= MAX_QUEUE) stop(rec, 'timeout', '作品累積太多沒處理的請求，已停止');
@@ -557,7 +573,7 @@
     }
     rec.seq += 1;
     const id = rec.seq;
-    rec.queue.push({ id, budget, done, deadline: 0 });
+    rec.queue.push({ id, budget, done, deadline: 0, confirming: false });
     if (rec.queue.length === 1) arm(rec);
     try {
       rec.worker.postMessage({ ...msg, id });
@@ -574,14 +590,16 @@
   }
   function overdue(rec) {
     const head = rec.queue[0];
-    if (!head || rec.dead) return;
+    if (!head || rec.dead || head.confirming) return;
     const left = head.deadline - performance.now();
     if (left > 0) {
       rec.timer = setTimeout(() => overdue(rec), left + 2);
       return;
     }
-    if (!rec.ready) return finishLoad(rec, false, '作品程式載入逾時（最外層的程式跑太久或卡住）');
-    stop(rec, 'timeout', `作品 ${head.budget} ms 內沒有回應（可能是無限迴圈或一步算太久），已停止`);
+    head.confirming = true;
+    confirmSeq += 1;
+    confirming.set(confirmSeq, { rec, head });
+    confirmChannel.port2.postMessage(confirmSeq);
   }
   function expireOverdue() {
     const now = performance.now();
